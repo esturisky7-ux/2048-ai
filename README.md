@@ -13,6 +13,9 @@ a live local dashboard.**
 
 **TD(0) n-tuple learning · Fixed-seed evaluation · Pure Python standard library**
 
+**📖 [Read the Wiki](https://github.com/esturisky7-ux/2048-ai/wiki)** — task-oriented
+guides for installation, training, evaluation, the dashboard and troubleshooting
+
 </div>
 
 ![The local dashboard showing a real 66,000-game training run, performance graphs, achievement rates, and the learned agent playing 2048](docs/images/dashboard.png)
