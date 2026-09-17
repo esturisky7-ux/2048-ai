@@ -1,0 +1,6 @@
+{
+  "description": "Expectimax search depth 1. Reference point for the depth sweep.",
+  "kind": "agent",
+  "eval_games": 60,
+  "agent": {"name": "expectimax", "depth": 1, "prob_cutoff": 0.001, "adaptive": false}
+}

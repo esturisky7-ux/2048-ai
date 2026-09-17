@@ -1,0 +1,7 @@
+{
+  "description": "5% random moves. Tests whether explicit exploration helps, given the tile spawns are already stochastic.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "learning": {"epsilon": 0.05}
+}

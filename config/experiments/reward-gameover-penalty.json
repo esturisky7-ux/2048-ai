@@ -1,0 +1,7 @@
+{
+  "description": "Subtracts a fixed penalty when the game ends, on top of the score reward.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "reward": {"score": 1.0, "game_over_penalty": 500.0}
+}

@@ -1,0 +1,6 @@
+{
+  "description": "Expectimax search depth 3, looser cutoff to stay affordable. Slow.",
+  "kind": "agent",
+  "eval_games": 30,
+  "agent": {"name": "expectimax", "depth": 3, "prob_cutoff": 0.005, "adaptive": false}
+}

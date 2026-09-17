@@ -1,0 +1,7 @@
+{
+  "description": "Evaluation-function variant: adds a snake-shaped positional weight pulling big tiles into one corner.",
+  "kind": "agent",
+  "eval_games": 60,
+  "agent": {"name": "expectimax", "depth": 2, "prob_cutoff": 0.001,
+            "weights": {"corner": 2.0}}
+}

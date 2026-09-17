@@ -1,0 +1,33 @@
+{
+  "run": "default",
+  "tuple_set": "4x6",
+  "learning": {
+    "alpha": 0.1,
+    "alpha_min": 0.005,
+    "alpha_decay": 1.0,
+    "alpha_decay_every": 200000,
+    "gamma": 1.0,
+    "epsilon": 0.0
+  },
+  "reward": {
+    "score": 1.0,
+    "milestone": 0.0,
+    "game_over_penalty": 0.0,
+    "empty_potential": 0.0,
+    "survival": 0.0,
+    "gamma": 1.0
+  },
+  "training": {
+    "seed": 12345,
+    "report_every": 200,
+    "checkpoint_every": 2000,
+    "snapshot_every": 0,
+    "rolling_window": 1000,
+    "eval_every": 20000,
+    "eval_games": 200
+  },
+  "evaluation": {
+    "games": 1000,
+    "seed": 987654
+  }
+}

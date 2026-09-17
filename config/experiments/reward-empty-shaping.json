@@ -1,0 +1,7 @@
+{
+  "description": "Potential-based shaping on empty-cell count. Policy-invariant by the Ng-Harada-Russell theorem, so it can only change learning SPEED, never the optimum.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "reward": {"score": 1.0, "empty_potential": 4.0}
+}

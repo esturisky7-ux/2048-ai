@@ -1,0 +1,7 @@
+{
+  "description": "Smaller 4x5-tuple network (17 MB instead of 268 MB). Learns faster per game early, caps out lower.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "tuple_set": "4x5"
+}

@@ -1,0 +1,7 @@
+{
+  "description": "Evaluation-function variant: weights empty cells far more heavily than the default.",
+  "kind": "agent",
+  "eval_games": 60,
+  "agent": {"name": "expectimax", "depth": 2, "prob_cutoff": 0.001,
+            "weights": {"empty": 800.0}}
+}

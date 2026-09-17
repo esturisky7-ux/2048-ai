@@ -1,0 +1,46 @@
+# Runs the whole test suite on Linux, Windows and macOS.
+#
+# The project has no dependencies, so there is nothing to install: check out
+# the code, put a Python on PATH, and run. That is also exactly what a new
+# user does, which makes this workflow a standing check that the README's
+# instructions still work on all three platforms.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} · Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Version
+        run: python train.py --version
+
+      - name: Installation check
+        run: python train.py --check
+
+      - name: Test suite
+        run: python -m unittest discover -s tests -v
+
+      - name: Engine benchmark
+        run: python tests/benchmark_engine.py

@@ -1,0 +1,7 @@
+{
+  "description": "Eight 4-cell tuples (2 MB). Tiny and quick, clearly weaker at the top end.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "tuple_set": "8x4"
+}

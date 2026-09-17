@@ -1,0 +1,7 @@
+{
+  "description": "Start at 0.2 and halve every 20k games, floor 0.01.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "learning": {"alpha": 0.2, "alpha_decay": 0.5, "alpha_decay_every": 20000, "alpha_min": 0.01}
+}

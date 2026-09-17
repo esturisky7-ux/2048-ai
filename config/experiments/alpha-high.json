@@ -1,0 +1,7 @@
+{
+  "description": "Learning rate 0.3. Faster early gains, risks instability later.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "learning": {"alpha": 0.3}
+}

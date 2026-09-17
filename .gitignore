@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# 2048 AI -- what stays out of version control
+#
+# Rule of thumb: if the project can regenerate it, it does not belong here.
+# Everything below is either rebuilt on demand, specific to one machine, or
+# far too large for Git.
+# ---------------------------------------------------------------------------
+
+# --- trained weights, checkpoints and snapshots ----------------------------
+# The default 4x6 network is a 268 MB float32 file; GitHub rejects anything
+# over 100 MB, and even the small networks are pure derived data. Train your
+# own (see the README) or download a release asset if one is published.
+checkpoints/
+*.f32
+
+# --- run data: history, evaluations, status, experiment results ------------
+# status.json also records a local PID, and history/evaluation logs describe
+# one particular machine's run.
+data/
+*.jsonl
+
+# --- rebuildable lookup tables ---------------------------------------------
+# data/tables/idx-*.bin is a cache of n-tuple index tables (22-34 MB each).
+# Deleting it costs one rebuild of a few seconds.
+*.bin
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# --- virtual environments --------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+pyvenv.cfg
+
+# --- test and tooling caches -----------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- logs, PIDs and other runtime scratch ----------------------------------
+*.log
+*.pid
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# --- editors and IDEs ------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.\#*
+\#*\#
+
+# --- operating-system metadata ---------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+desktop.ini
+$RECYCLE.BIN/
+
+# --- secrets ---------------------------------------------------------------
+# Nothing in this project needs credentials. These patterns are here so that
+# an accidentally created key or token file cannot be committed by reflex.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*credentials*
+*secret*
+.netrc
+
+# --- exceptions ------------------------------------------------------------
+# Documentation images are checked in deliberately.
+!docs/images/*.png

@@ -1,0 +1,7 @@
+{
+  "description": "Pays a one-off bonus the first time each new biggest tile appears. Paid once, so it cannot be farmed by sitting still.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "reward": {"score": 1.0, "milestone": 0.5}
+}

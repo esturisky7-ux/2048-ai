@@ -1,0 +1,8 @@
+{
+  "description": "Control: pure merge-score reward, alpha 0.1, 4x6 network.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "tuple_set": "4x6",
+  "learning": {"alpha": 0.1}
+}

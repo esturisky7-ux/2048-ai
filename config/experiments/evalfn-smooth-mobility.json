@@ -1,0 +1,7 @@
+{
+  "description": "Evaluation-function variant: turns on the smoothness penalty and a mobility bonus, which the default weights leave at zero.",
+  "kind": "agent",
+  "eval_games": 60,
+  "agent": {"name": "expectimax", "depth": 2, "prob_cutoff": 0.001,
+            "weights": {"smoothness": 60.0, "mobility": 300.0}}
+}

@@ -1,0 +1,7 @@
+{
+  "description": "Learning rate 0.025. Slower but steadier; better very late.",
+  "kind": "train",
+  "games": 5000,
+  "eval_games": 200,
+  "learning": {"alpha": 0.025}
+}

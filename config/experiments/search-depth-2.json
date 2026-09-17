@@ -1,0 +1,6 @@
+{
+  "description": "Expectimax search depth 2 (the default).",
+  "kind": "agent",
+  "eval_games": 60,
+  "agent": {"name": "expectimax", "depth": 2, "prob_cutoff": 0.001, "adaptive": false}
+}

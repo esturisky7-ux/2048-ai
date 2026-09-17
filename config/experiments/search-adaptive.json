@@ -1,0 +1,6 @@
+{
+  "description": "Depth 1 but deepening when the board is crowded. Best measured strength-per-second of the hand-written search.",
+  "kind": "agent",
+  "eval_games": 40,
+  "agent": {"name": "expectimax", "depth": 1, "prob_cutoff": 0.001, "adaptive": true}
+}
