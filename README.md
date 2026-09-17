@@ -1,24 +1,32 @@
+<div align="center">
+
 # 2048 AI
+
+**Train a 2048 agent from self-play, evaluate it honestly, and watch it learn in
+a live local dashboard.**
 
 [![tests](https://github.com/esturisky7-ux/2048-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/esturisky7-ux/2048-ai/actions/workflows/tests.yml)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/downloads/)
+[![platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-6f42c1)](#platform-support)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)](#requirements)
 
-A high-performance 2048 AI laboratory: train agents that learn the game by
-playing it, evaluate them with confidence intervals, compare strategies head to
-head on identical games, and watch the whole thing progress in a local web
-dashboard.
+**TD(0) n-tuple learning · Fixed-seed evaluation · Pure Python standard library**
 
-Everything runs on the **Python 3 standard library**. There is nothing to
-install, nothing to compile, no `pip`, no NumPy, no GPU. It was developed on a
-dual-core Celeron laptop and is fast there.
+</div>
 
-![The dashboard, showing a run of 66,000 training games and the trained agent playing a live game](docs/images/dashboard.png)
+![The local dashboard showing a real 66,000-game training run, performance graphs, achievement rates, and the learned agent playing 2048](docs/images/dashboard.png)
+
+<p align="center"><sub>The included local dashboard, showing real output from the recorded 66,000-game training run.</sub></p>
+
+> **Recorded evaluation:** after 66,000 self-play training games, the learned
+> agent averaged **55,626** over 200 fixed-seed evaluation games, reached the
+> **2048 tile in 90.5%** of them, and reached **8192**. [See the complete
+> evaluation report.](#evaluating-an-agent)
 
 ---
 
-## Quick start
+## Quick Start
 
 ```bash
 git clone https://github.com/esturisky7-ux/2048-ai.git
