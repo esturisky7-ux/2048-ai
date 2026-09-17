@@ -12,7 +12,6 @@ Results (including the exact config used) land in data/experiments/.
 """
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -20,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from experiments.runner import (run_experiment, list_experiments,      # noqa: E402
                                 load_results, comparison_table, result_path)
-from training.checkpoint import python_command                         # noqa: E402
+from training.checkpoint import python_command, display_path           # noqa: E402
 from version import version_string                                     # noqa: E402
 
 
@@ -77,7 +76,7 @@ def main() -> int:
                   f"[{ev['ci95_mean'][0]:,.0f}, {ev['ci95_mean'][1]:,.0f}]  "
                   f"median {ev['median_score']:,.0f}  "
                   f"best tile {ev['highest_tile']:,}")
-        print(f"  saved {os.path.relpath(result_path(name))}")
+        print(f"  saved {display_path(result_path(name))}")
 
     print()
     print(comparison_table(load_results()))

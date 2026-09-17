@@ -34,7 +34,7 @@ import time
 from random import Random
 
 from evaluation.evaluator import game_seed
-from .checkpoint import Run
+from .checkpoint import Run, display_path
 from .learner import TDLearner
 from .ntuple import NTupleNetwork
 from .reward import RewardFunction
@@ -215,7 +215,7 @@ class Trainer:
         if self.snapshot_every and self.game_index \
                 and self.game_index % self.snapshot_every == 0:
             path = self.run.snapshot(self.game_index)
-            self._log(f"  snapshot -> {os.path.relpath(path)}")
+            self._log(f"  snapshot -> {display_path(path)}")
 
     # -- reporting ---------------------------------------------------------
     def _rate(self):
@@ -369,7 +369,7 @@ class Trainer:
             self._log(
                 f"\nstopped at {self.game_index:,} games "
                 f"({self.session_games:,} this session). "
-                f"checkpoint saved to {os.path.relpath(self.run.meta_path)}")
+                f"checkpoint saved to {display_path(self.run.meta_path)}")
 
     def _train_serial(self, target: int) -> None:
         learner = self.learner

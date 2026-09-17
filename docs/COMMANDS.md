@@ -268,7 +268,7 @@ http://127.0.0.1:8000/?watch=learned&seed=1&speed=0
 ## Tests and benchmarks
 
 ```bash
-python3 -m unittest discover -s tests             # all 141 tests (~65 s)
+python3 -m unittest discover -s tests             # all 142 tests (~70 s)
 python3 -m unittest discover -s tests -v          # verbose
 python3 -m unittest discover -s tests -q          # quiet
 python3 -m unittest tests.test_engine             # one module

@@ -65,12 +65,12 @@ The `TestPortability` class in `tests/test_infra.py` covers several of these.
 ## Running the tests
 
 ```bash
-python3 -m unittest discover -s tests          # everything, ~65 s
+python3 -m unittest discover -s tests          # everything, ~70 s
 python3 -m unittest tests.test_engine          # one module
 python3 tests/benchmark_engine.py              # throughput benchmark
 ```
 
-All 141 must pass before a pull request is ready. The end-to-end module drives
+All 142 must pass before a pull request is ready. The end-to-end module drives
 the real command-line entry points as subprocesses, so it is slower than the
 rest and worth running last.
 

@@ -341,6 +341,20 @@ class TestPortability(unittest.TestCase):
             self.assertTrue(DS.pid_alive(os.getpid()))
             self.assertFalse(DS.pid_alive(0))
 
+    def test_display_path_survives_an_unrelatable_path(self):
+        """On Windows relpath raises across drive letters; printing must not."""
+        import unittest.mock as mock
+        here = os.path.abspath(os.curdir)
+        self.assertEqual(CP.display_path(os.path.join(here, "a", "b"), here),
+                         os.path.join("a", "b"))
+
+        def cross_drive(*a, **k):
+            raise ValueError("path is on mount 'C:', start on mount 'D:'")
+
+        with mock.patch.object(CP.os.path, "relpath", cross_drive):
+            got = CP.display_path(os.path.join(here, "a", "b"))
+        self.assertEqual(got, os.path.join(here, "a", "b"))
+
     def test_atomic_write_retries_when_the_target_is_locked(self):
         """Windows refuses os.replace while a reader has the file open."""
         import unittest.mock as mock

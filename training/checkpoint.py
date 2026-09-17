@@ -44,6 +44,21 @@ def python_command() -> str:
     return "python" if os.name == "nt" else "python3"
 
 
+def display_path(path, start=None) -> str:
+    """A short path for printing, falling back to the absolute one.
+
+    ``os.path.relpath`` raises on Windows when the two paths sit on different
+    drives -- which happens as soon as somebody runs the project from ``D:``
+    with a working directory on ``C:``, or points a run at another volume.
+    A progress message is never worth crashing a training run over, so an
+    unrelatable path is simply printed in full.
+    """
+    try:
+        return os.path.relpath(path, start) if start else os.path.relpath(path)
+    except (ValueError, OSError):
+        return os.fspath(path)
+
+
 def atomic_write_json(path, obj) -> None:
     """Write JSON so readers never see a partial file.
 

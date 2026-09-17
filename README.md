@@ -139,7 +139,7 @@ the 2048 tile in about 89% of games and has produced the 8192 tile.
 | **Honest evaluation** | Identical seeded games per agent, 95% CIs, Wilson intervals for tile rates. |
 | **Experiment framework** | 18 shipped configs; each result stores the config that produced it. |
 | **Live dashboard** | Training status, charts, records, and a game viewer, all localhost-only. |
-| **Tested** | 141 tests, run on Linux, Windows and macOS by CI. |
+| **Tested** | 142 tests, run on Linux, Windows and macOS by CI. |
 
 ---
 
@@ -339,7 +339,7 @@ evaluation/   the fixed, seeded evaluation procedure and its statistics
 experiments/  runs a config, evaluates it, stores config+result together
 dashboard/    stdlib HTTP server, JSON API, static front end, live game thread
 config/       default.json plus 18 experiment configs
-tests/        141 tests: unit, integration, end-to-end, plus a benchmark
+tests/        142 tests: unit, integration, end-to-end, plus a benchmark
 docs/         architecture and command reference
 ```
 
@@ -719,7 +719,7 @@ Results land in `data/experiments/<name>.json`.
 ## Running tests
 
 ```bash
-python3 -m unittest discover -s tests            # everything (~65 s)
+python3 -m unittest discover -s tests            # everything (~70 s)
 python3 -m unittest discover -s tests -v         # verbose
 python3 -m unittest tests.test_engine            # one module
 python3 tests/benchmark_engine.py                # throughput benchmark
@@ -727,7 +727,7 @@ python3 tests/benchmark_engine.py                # throughput benchmark
 
 On Windows use `py -m unittest discover -s tests`.
 
-**141 tests.** What they actually check:
+**142 tests.** What they actually check:
 
 - **`test_engine.py`** — merge rules including the awkward cases (`2 2 2 2` →
   `4 4 . .`, `4 4 8 8` → `8 16 . .`), that a freshly merged tile cannot merge
@@ -1040,7 +1040,7 @@ Python, platform and worker start method — when opening an issue.
 │   ├── default.json           the default configuration
 │   └── experiments/           18 experiment configs
 │
-├── tests/                     141 tests + the engine benchmark
+├── tests/                     142 tests + the engine benchmark
 ├── docs/
 │   ├── ARCHITECTURE.md        how the pieces fit together, and why
 │   ├── COMMANDS.md            command reference, with Windows equivalents

@@ -28,7 +28,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from agents.registry import make_agent, AGENT_NAMES            # noqa: E402
-from training.checkpoint import Run, list_runs, read_json      # noqa: E402
+from training.checkpoint import (Run, list_runs, read_json,    # noqa: E402
+                                 display_path)
 from training.stats import AllTimeStats                        # noqa: E402
 from dashboard.live import LiveGameManager                     # noqa: E402
 
@@ -189,7 +190,7 @@ def status_payload(run_name: str) -> dict:
         "mean_score": at.get("mean_score", 0.0),
         "checkpoint_saved_at": meta.get("saved_at"),
         "checkpoint_saved_iso": meta.get("saved_at_iso"),
-        "checkpoint_path": os.path.relpath(run.meta_path, ROOT),
+        "checkpoint_path": display_path(run.meta_path, ROOT),
         "all_time": at,
         "rolling": (status.get("rolling") if running else None)
                    or meta.get("rolling", {}),
