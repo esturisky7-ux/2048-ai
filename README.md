@@ -888,6 +888,20 @@ takes several thousand moves instead of a few hundred. Moves per second is the
 honest measure of throughput, and it stays roughly flat at 12,000–15,000 per
 core.
 
+### Other hardware, for scale
+
+The same engine benchmark on GitHub's CI runners, which is a useful reminder of
+how much the hardware matters:
+
+```
+Dell Latitude 3300 (Celeron 3865U)     1,200 games/s     141,475 moves/s
+GitHub windows-latest runner           2,639 games/s     310,971 moves/s
+GitHub macos-latest runner (arm64)     3,743 games/s     441,027 moves/s
+```
+
+Training throughput scales similarly, so the "~50 minutes for 20,000 games"
+figure above is close to a worst case rather than a typical one.
+
 ### Memory and disk
 
 | Network | Weights | File size |
@@ -906,9 +920,11 @@ been written; on Windows it occupies its full size immediately.
 
 | Platform | Status |
 |---|---|
-| **Linux** | Developed and fully tested here: the complete test suite, real multi-day training runs, and the fresh-clone install. |
-| **Windows** | Code reviewed for Windows specifically, and the whole test suite runs on `windows-latest` in CI on every push. Not tested by hand on physical Windows hardware. |
-| **macOS** | Same: reviewed, and the whole test suite runs on `macos-latest` in CI on every push. Not tested by hand on physical Apple hardware. |
+| **Linux** | Developed and hand-tested here: the complete test suite, long real training runs, and a from-scratch clone-and-run. Also `ubuntu-latest` in CI. |
+| **Windows** | Reviewed for Windows specifically, and the **complete test suite passes on `windows-latest`** in CI on every push — including the Ctrl-Break interrupt path and two-worker training. Not hand-tested on physical Windows hardware. |
+| **macOS** | Same: reviewed, and the **complete test suite passes on `macos-latest`** (Apple silicon) in CI on every push. Not hand-tested on physical Apple hardware. |
+
+CI covers Python 3.10, 3.12 and 3.13 on each of the three.
 
 The `tests` badge at the top of this page shows the current state of all three;
 the [Actions tab](../../actions) has the per-platform detail.
