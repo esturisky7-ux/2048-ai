@@ -16,7 +16,7 @@ reinforcement learning or 2048 solvers.
 - [Checkpoints and crash safety](#checkpoints-and-crash-safety)
 - [Multiprocessing and worker training](#multiprocessing-and-worker-training)
 - [Evaluation](#evaluation)
-- [The dashboard](#the-dashboard)
+- [The control center](#the-control-center)
 - [Module map](#module-map)
 
 ---
@@ -475,37 +475,130 @@ differences between agents are differences in play and not luck.
 
 ---
 
-## The dashboard
+## The control center
 
-`http.server` from the standard library, no framework, no dependencies, and a
-front end of hand-written HTML/CSS/JS that loads nothing from the internet —
-including the charts, which are drawn on `<canvas>` directly.
+`server.py` starts the application most people actually use. It is
+`http.server` from the standard library plus a front end of hand-written HTML,
+CSS and JavaScript that loads nothing from the internet — including the charts,
+which are drawn on `<canvas>` directly.
 
 ```
-browser ──HTTP──► dashboard/server.py ──reads──► data/<run>/status.json
-                         │                       data/<run>/history.jsonl
-                         │                       data/<run>/evaluations.jsonl
-                         │                       checkpoints/<run>/meta.json
-                         │
-                         └──► dashboard/live.py ──► weights.f32 (READ-ONLY)
-                                    plays its own game in a thread
+   browser  (one page, hash routing, no framework, no build step)
+      │
+      │  JSON over HTTP + Server-Sent Events
+      ▼
+ dashboard/server.py        transport: routing, static files, SSE, guards
+      │
+      ▼
+ dashboard/api.py           what the answers are: validation, payloads
+      │
+      ├──────────────► dashboard/games.py     game sessions (engine, in-process)
+      │
+      └──────────────► dashboard/jobs.py      job manager
+                              │
+                              │ subprocess, explicit argv, never a shell
+                              ▼
+                       train.py  ·  python -m dashboard.runner
+                              │
+                              ▼
+                       checkpoints/  ·  data/
 ```
 
-**The dashboard never talks to the trainer.** It only reads files the trainer
-writes, and for live games it opens the weights through a *read-only* mapping,
-so nothing it does can disturb or corrupt a run in progress.
+### Why the split
 
-The live game is played in a background thread that stays only ~48 frames ahead
-of what the browser has consumed. That buffer *is* the throttle: at 1× playback
-it computes about eight moves a second and leaves the rest of the CPU to
-training. The server process also lowers its own scheduling priority at
-start-up where the OS supports it.
+**Transport and meaning are separate.** `server.py` owns the socket;
+`api.py` owns what a request means. That keeps the HTTP layer thin and lets
+the whole API be tested without opening a port — which is why `test_api.py`
+runs in half a second while `test_server.py` covers the boundary over a real
+socket.
+
+**Nothing slow runs in a request handler.** A request that takes two hours is
+not a request. Training, evaluation, comparison, benchmarking and experiments
+are all jobs.
+
+### The job manager
+
+`dashboard/jobs.py` launches work as supervised child processes. Three reasons
+it is processes rather than threads, in order of importance:
+
+1. **The GIL.** Training is pure Python compute. A training thread inside the
+   server would fight it for the interpreter lock, making the UI crawl *and*
+   slowing training down.
+2. **Interruptibility.** A subprocess can be signalled and will run its own
+   `finally` block — which is exactly how `train.py` already checkpoints on
+   Ctrl-C. A wedged thread cannot be stopped at all.
+3. **Blast radius.** A crash in a job cannot take the server down.
+
+A job has an id, a type, a state (`QUEUED` → `RUNNING` → `STOPPING` →
+`COMPLETED` / `FAILED` / `CANCELLED`), a start time, a pid, progress, a result
+and an error. A reaper thread polls the children and settles their final state.
+
+**Graceful stop** means ask politely, then insist: deliver the platform's
+interrupt (SIGINT on POSIX, a console Ctrl-Break event on Windows), give the
+child a generous grace period to finish its game and write its checkpoint, and
+only then escalate to `terminate()` and `kill()`. A browser-initiated stop is
+exactly as safe as Ctrl-C, because it is the same mechanism. A job that exits
+non-zero *because* it was interrupted is recorded as `CANCELLED`, not
+`FAILED` — the state we asked for wins over the exit code.
+
+**Conflicting work is refused, not raced.** Two training processes writing one
+weight file would interleave their updates and corrupt the run's accounting.
+Each job declares an *exclusive key* — for training, the run name — and a
+second job with a live key is rejected with a 409 that names the job already
+holding it.
+
+**Why training uses `train.py` and everything else uses a runner.** Training
+goes through the real command-line entry point, so the browser and the
+terminal drive the same tested path. Evaluation, comparison, benchmarking and
+experiments go through `python -m dashboard.runner`, which wraps the same
+library functions but writes structured progress and results to files the API
+can read while the job is still running.
+
+### Live updates
+
+The browser opens an `EventSource` on `/api/stream`, and the server pushes a
+status frame every second plus any new log events. Server-Sent Events need no
+dependency, reconnect on their own, and are a better fit than websockets for a
+one-way feed. Polling is the fallback when `EventSource` is unavailable or the
+stream drops, and `?live=poll` forces it.
+
+### Game sessions
+
+`dashboard/games.py` runs both kinds of game **on the Python engine**. That is
+a correctness decision: a second implementation of the merge rules in
+JavaScript would eventually disagree with the first, and then "the AI scored
+more than you" would be measuring the difference between two rule sets.
+
+An AI session is a throttled worker thread that stays ~48 frames ahead of what
+the browser has consumed — that buffer *is* the throttle, which is why slow
+playback costs almost no CPU. It supports pause, resume and single-step. A
+human session holds no thread at all: the browser posts a direction and gets
+the new board back.
+
+The viewer opens the weights through a **read-only** memory map, and the
+control center never talks to the trainer — it reads the files the trainer
+writes. So nothing a browser does can disturb a run in progress.
 
 Liveness detection: the trainer heartbeats `status.json` every three seconds; a
 status older than fifteen seconds, or one whose PID no longer exists, is
 reported as stopped rather than as phantom training. The PID check is a
 read-only handle probe on Windows, because the POSIX `os.kill(pid, 0)` idiom
 would *terminate* the trainer there.
+
+### The security boundary
+
+This server can start processes and delete files, so its endpoints are
+privileged local controls rather than a read-only dashboard:
+
+- it binds to **127.0.0.1** unless told otherwise, and warns loudly when told
+  otherwise;
+- every mutating request must carry `X-2048-Request`, which a cross-origin
+  page cannot set without a preflight that is never granted, and any `Origin`
+  present must be loopback;
+- **no filesystem path ever comes from the browser** — `dashboard/store.py` is
+  the only thing that turns a validated identifier into a path, and it
+  re-checks containment afterwards;
+- job commands are explicit argument lists, never a shell string.
 
 ---
 
@@ -529,8 +622,15 @@ would *terminate* the trainer there.
 | `training/trainer.py` | the loop, reporting, checkpoint scheduling, workers |
 | `evaluation/evaluator.py` | fixed seeded evaluation and its statistics |
 | `experiments/runner.py` | run a config, evaluate, store config + result |
-| `dashboard/server.py` | HTTP server and JSON API |
-| `dashboard/live.py` | throttled live-game thread |
+| `dashboard/server.py` | HTTP transport: routing, static files, SSE, request guards |
+| `dashboard/api.py` | API routing, input validation, payload building |
+| `dashboard/jobs.py` | job manager: supervised subprocesses, graceful stop |
+| `dashboard/runner.py` | job worker for evaluation, comparison, benchmark, experiments |
+| `dashboard/games.py` | AI and human game sessions, on the Python engine |
+| `dashboard/store.py` | checkpoint identifiers → paths, saved results, UI settings |
+| `dashboard/sysinfo.py` | platform diagnostics that degrade instead of raising |
+| `dashboard/events.py` | the bounded event log behind the Logs page |
+| `engine/benchmark.py` | throughput measurements shared by the CLI and the UI |
 
 Dependency direction is strictly one way: `engine` knows about nothing,
 `agents` and `training` know about `engine`, `evaluation` knows about `engine`,

@@ -72,7 +72,9 @@ def get_json(url, timeout=10):
 def post_json(url, payload, timeout=30):
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers={"Content-Type": "application/json",
+                 # The control center refuses mutating requests without it.
+                 "X-2048-Request": "1"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode())
@@ -243,9 +245,15 @@ class TestEndToEnd(unittest.TestCase):
         self.assertEqual(d["config"]["agent"]["depth"], 1)
         self.assertEqual(d["evaluation"]["games"], 4)
 
-    def test_10_dashboard_serves_and_streams(self):
+    def test_10_control_center_serves_and_streams(self):
+        """The web control center sees the run this module just trained.
+
+        The CLI and the browser drive the same files, so a run created with
+        ``train.py`` must be visible and playable from the server without any
+        extra step.
+        """
         port = free_port()
-        p = popen_interruptible(["server.py", "--port", str(port)],
+        p = popen_interruptible(["server.py", "--port", str(port), "--quiet"],
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True)
         base = f"http://127.0.0.1:{port}"
@@ -257,17 +265,17 @@ class TestEndToEnd(unittest.TestCase):
                 except Exception:
                     time.sleep(0.5)
             else:
-                self.fail("dashboard did not start")
+                self.fail("the control center did not start")
 
-            # static assets
-            for path in ("/", "/static/style.css", "/static/app.js"):
+            # the single-page app and its assets
+            for path in ("/", "/static/css/app.css", "/static/js/core.js"):
                 with urllib.request.urlopen(base + path, timeout=5) as r:
                     self.assertEqual(r.status, 200, path)
 
-            # status reflects the run we just trained
+            # status reflects the run trained by the CLI earlier in this module
             st = get_json(f"{base}/api/status?run={RUN}")
             self.assertTrue(st["exists"])
-            self.assertFalse(st["running"])       # no trainer alive now
+            self.assertFalse(st["training"]["running"])   # no trainer alive
             self.assertGreater(st["games"], 0)
             self.assertEqual(st["tuple_set"], "8x4")
 
@@ -276,13 +284,18 @@ class TestEndToEnd(unittest.TestCase):
             self.assertIn("history", h)
             self.assertGreater(len(h["history"]["games"]), 0)
 
-            # live game streams real frames
-            started = post_json(f"{base}/api/watch/start",
+            # and the checkpoint the CLI wrote is listed
+            cps = get_json(f"{base}/api/checkpoints")["checkpoints"]
+            self.assertTrue([c for c in cps if c["run"] == RUN])
+
+            # a live game streams real frames from that checkpoint
+            started = post_json(f"{base}/api/game/ai/start",
                                 {"agent": "learned", "run": RUN, "depth": 1})
             self.assertTrue(started.get("ok"), started)
+            sid = started["session"]["id"]
             frames = []
             for _ in range(40):
-                snap = get_json(f"{base}/api/watch/state?since={len(frames)}")
+                snap = get_json(f"{base}/api/game/{sid}?since={len(frames)}")
                 frames.extend(snap.get("frames", []))
                 if len(frames) > 12 or snap.get("done"):
                     break
@@ -292,15 +305,15 @@ class TestEndToEnd(unittest.TestCase):
             self.assertEqual(len(f0["board"]), 4)
             self.assertEqual(len(f0["board"][0]), 4)
             self.assertGreaterEqual(frames[-1]["score"], f0["score"])
-            post_json(f"{base}/api/watch/stop", {})
+            post_json(f"{base}/api/game/{sid}/control", {"action": "stop"})
 
             # bad input is rejected, not a 500
-            self.assertIn("error", post_json(f"{base}/api/watch/start",
+            self.assertIn("error", post_json(f"{base}/api/game/ai/start",
                                              {"agent": "nope"}))
         finally:
             interrupt(p)
             try:
-                p.communicate(timeout=20)
+                p.communicate(timeout=30)
             except subprocess.TimeoutExpired:
                 p.kill()
                 p.communicate()

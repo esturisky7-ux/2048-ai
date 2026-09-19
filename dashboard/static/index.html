@@ -2,127 +2,61 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>2048 AI Laboratory</title>
-<link rel="stylesheet" href="/static/style.css">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>2048 AI Control Center</title>
+<link rel="stylesheet" href="/static/css/app.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%23edc22e'/><text y='68' x='50' text-anchor='middle' font-size='42' font-family='sans-serif' font-weight='700' fill='%23fff'>2048</text></svg>">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <span class="logo">2048</span>
-    <div>
-      <h1>AI Laboratory</h1>
-      <p class="sub">local training &amp; evaluation</p>
-    </div>
-  </div>
-  <div class="topbar-right">
-    <label class="field">
-      <span>Run</span>
-      <select id="run-select"></select>
-    </label>
-    <div id="train-pill" class="pill pill-idle"><i></i><span>—</span></div>
-    <button id="theme-toggle" class="btn btn-ghost" title="Toggle theme">◐</button>
-  </div>
-</header>
 
-<main>
-  <!-- ---------------- training status ---------------- -->
-  <section class="panel">
-    <div class="panel-head"><h2>Training status</h2><span id="status-note" class="note"></span></div>
-    <div class="stat-grid" id="status-grid">
-      <div class="stat"><label>Total games</label><b id="s-games">—</b></div>
-      <div class="stat"><label>Games / sec</label><b id="s-gps">—</b><small id="s-mps"></small></div>
-      <div class="stat"><label>Session</label><b id="s-session">—</b><small id="s-session-games"></small></div>
-      <div class="stat"><label>Total train time</label><b id="s-traintime">—</b></div>
-      <div class="stat"><label>Checkpoint</label><b id="s-ckpt">—</b><small id="s-ckpt-path"></small></div>
-      <div class="stat"><label>Latest evaluation</label><b id="s-eval">—</b><small id="s-eval-note"></small></div>
-    </div>
-  </section>
-
-  <!-- ---------------- records ---------------- -->
-  <section class="panel">
-    <div class="panel-head"><h2>Records</h2><span class="note" id="rec-note"></span></div>
-    <div class="stat-grid records">
-      <div class="stat"><label>Best score ever</label><b id="r-score">—</b><small id="r-score-at"></small></div>
-      <div class="stat"><label>Highest tile ever</label><b id="r-tile">—</b><small id="r-tile-at"></small></div>
-      <div class="stat"><label>Longest game</label><b id="r-long">—</b><small>moves</small></div>
-      <div class="stat"><label>Total games played</label><b id="r-games">—</b><small id="r-moves"></small></div>
-    </div>
-    <div class="rates" id="rate-bars"></div>
-  </section>
-
-  <!-- ---------------- performance ---------------- -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>Performance</h2>
-      <span class="note">rolling window over training games; evaluation points use a fixed seeded set</span>
-    </div>
-    <div class="chart-grid">
-      <div class="chart-box"><h3>Average score</h3><canvas id="c-score"></canvas></div>
-      <div class="chart-box"><h3>Highest tile reached</h3><canvas id="c-tile"></canvas></div>
-      <div class="chart-box"><h3>Tile achievement rate (%)</h3><canvas id="c-rates"></canvas></div>
-      <div class="chart-box"><h3>Games played over time</h3><canvas id="c-games"></canvas></div>
-    </div>
-    <div id="chart-empty" class="empty hidden">No training history yet. Start training with
-      <code>python3 train.py --games 20000</code></div>
-  </section>
-
-  <!-- ---------------- live game ---------------- -->
-  <section class="panel">
-    <div class="panel-head"><h2>Live game</h2>
-      <span class="note">played by the dashboard in a throttled background thread — training is unaffected</span>
-    </div>
-    <div class="live">
-      <div class="board-wrap">
-        <div id="board" class="board"></div>
-        <div class="board-stats">
-          <div><label>Score</label><b id="g-score">0</b></div>
-          <div><label>Moves</label><b id="g-moves">0</b></div>
-          <div><label>Max tile</label><b id="g-tile">0</b></div>
-          <div><label>Last move</label><b id="g-action">—</b></div>
-        </div>
-      </div>
-      <div class="controls">
-        <label class="field"><span>Agent</span>
-          <select id="agent-select">
-            <option value="learned">Learned AI</option>
-            <option value="expectimax">Expectimax</option>
-            <option value="heuristic">Heuristic</option>
-            <option value="random">Random</option>
-          </select>
-        </label>
-        <label class="field" id="depth-field"><span>Search depth</span>
-          <select id="depth-select">
-            <option value="1">1 (greedy, fast)</option>
-            <option value="2" selected>2</option>
-            <option value="3">3 (slow)</option>
-          </select>
-        </label>
-        <label class="field"><span>Speed</span>
-          <select id="speed-select">
-            <option value="0.25">0.25×</option>
-            <option value="0.5">0.5×</option>
-            <option value="1" selected>1×</option>
-            <option value="2">2×</option>
-            <option value="5">5×</option>
-            <option value="0">Maximum</option>
-          </select>
-        </label>
-        <div class="btn-row">
-          <button id="watch-btn" class="btn btn-primary">Watch game</button>
-          <button id="stop-btn" class="btn" disabled>Stop</button>
-        </div>
-        <div id="live-status" class="live-status">idle</div>
-        <div class="hint" id="live-hint"></div>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark">2048</div>
+      <div class="brand-text">
+        <h1>AI Control Center</h1>
+        <p>local · zero dependencies</p>
       </div>
     </div>
-  </section>
+    <nav class="nav" aria-label="Sections"></nav>
+    <div class="sidebar-foot">
+      <span id="foot-version">—</span>
+      <button class="btn btn-ghost btn-sm" id="theme-toggle" title="Toggle theme"
+              aria-label="Toggle light and dark theme">◐</button>
+    </div>
+  </aside>
 
-  <footer>
-    <span id="foot-info">2048 AI Laboratory</span>
-  </footer>
-</main>
-<script src="/static/app.js"></script>
+  <main class="main">
+    <header class="topbar">
+      <button class="btn btn-ghost menu-btn" id="menu-btn" aria-label="Open navigation">☰</button>
+      <div>
+        <h2 id="page-title">Overview</h2>
+        <div class="sub" id="page-sub"></div>
+      </div>
+      <div class="topbar-right">
+        <div id="page-actions" class="btn-row"></div>
+        <span class="pill idle" id="global-status"><i></i><span>—</span></span>
+      </div>
+    </header>
+    <div class="content" id="view"></div>
+  </main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<script src="/static/js/core.js"></script>
+<script src="/static/js/charts.js"></script>
+<script src="/static/js/ui.js"></script>
+<script src="/static/js/views/overview.js"></script>
+<script src="/static/js/views/training.js"></script>
+<script src="/static/js/views/play.js"></script>
+<script src="/static/js/views/evaluate.js"></script>
+<script src="/static/js/views/compare.js"></script>
+<script src="/static/js/views/experiments.js"></script>
+<script src="/static/js/views/checkpoints.js"></script>
+<script src="/static/js/views/benchmarks.js"></script>
+<script src="/static/js/views/misc.js"></script>
+<script src="/static/js/shell.js"></script>
 </body>
 </html>

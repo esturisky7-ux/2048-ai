@@ -228,52 +228,133 @@ resolved config that produced it.
 
 ---
 
-## The dashboard
+## The control center
+
+**This is the main way to use the project.** One command, then everything
+happens in the browser.
 
 ```bash
-python3 server.py                     # http://127.0.0.1:8000/
+python3 server.py                     # http://127.0.0.1:8000
 python3 server.py --open              # and open a browser
 python3 server.py --port 8080         # if 8000 is taken
+python3 server.py --quiet             # one line instead of the banner
 ```
 
 ```powershell
 py server.py --open
 ```
 
-Stop it with Ctrl-C.
+Stop it with Ctrl-C. Shutdown is graceful: running jobs are asked to stop the
+way Ctrl-C asks them to, and the server waits for training to write its
+checkpoint before exiting.
 
-The dashboard binds to **localhost only**. `--host 0.0.0.0` exists but exposes
-an unauthenticated server to your network; it prints a warning, which you should
-take seriously.
+From the browser you can train, stop, resume, evaluate, compare agents, run
+experiments, manage checkpoints, watch the AI play, play yourself, benchmark
+the machine and read diagnostics — none of which needs a terminal.
+
+The server binds to **localhost only**. `--host` exists but exposes a server
+that can start processes and delete files; it prints a warning, which you
+should take seriously. Use a tunnel instead:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 you@the-machine
+```
 
 ### Deep links
 
 ```
-http://127.0.0.1:8000/?run=bigrun
-http://127.0.0.1:8000/?watch=learned&depth=1&speed=5
-http://127.0.0.1:8000/?watch=expectimax&depth=3&speed=1
-http://127.0.0.1:8000/?watch=learned&seed=1&speed=0
+http://127.0.0.1:8000/#/training
+http://127.0.0.1:8000/#/evaluate
+http://127.0.0.1:8000/?watch=learned&depth=1&speed=5#/play/watch
+http://127.0.0.1:8000/?watch=expectimax&depth=3&speed=1#/play/watch
+http://127.0.0.1:8000/?watch=learned&seed=1&speed=0#/play/watch
 ```
 
 | Parameter | Values |
 |---|---|
-| `run` | any run name from `--list-runs` |
 | `watch` | `learned`, `expectimax`, `heuristic`, `random` |
 | `depth` | search depth (`learned` and `expectimax`) |
-| `speed` | `0.25`, `0.5`, `1`, `2`, `5`, or `0` for maximum |
+| `speed` | `0.25`, `0.5`, `1`, `2`, `5`, `10`, or `0` for maximum |
 | `seed` | replays exactly the same game |
+| `live=poll` | poll instead of using the event stream |
+
+Pages are at `#/overview`, `#/training`, `#/play`, `#/evaluate`, `#/compare`,
+`#/experiments`, `#/checkpoints`, `#/benchmarks`, `#/logs`, `#/system` and
+`#/settings`.
+
+### Keyboard shortcuts
+
+| Keys | Action |
+|---|---|
+| `g` then `o` `t` `p` `e` `c` `k` `l` `s` | Jump to a page |
+| Arrow keys / `WASD` | Move, in a human game |
+| `Space` | Pause or resume a watched game |
+| `?` | Show the shortcut list |
+
+### The HTTP API
+
+The browser talks to a small JSON API, which is also usable from `curl`.
+Mutating requests need the `X-2048-Request` header — a cross-origin page
+cannot set it, which is the CSRF defence.
+
+```bash
+curl -s "http://127.0.0.1:8000/api/status?run=default"
+
+curl -s -X POST http://127.0.0.1:8000/api/training/start \
+     -H "Content-Type: application/json" -H "X-2048-Request: 1" \
+     -d '{"run":"my-run","games":20000,"workers":2,"tuple_set":"4x6"}'
+
+curl -s -X POST http://127.0.0.1:8000/api/training/stop \
+     -H "Content-Type: application/json" -H "X-2048-Request: 1" -d '{}'
+```
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/status?run=` | Everything the Overview shows |
+| `GET /api/history?run=` | Chart series, plus the evaluation series |
+| `GET /api/stream?run=` | Server-Sent Events: status and log frames |
+| `GET /api/runs` · `GET /api/agents` | What exists |
+| `GET /api/training?run=` | Just the training view |
+| `POST /api/training/start` · `/resume` · `/stop` | Control training |
+| `GET /api/jobs` · `/api/jobs/{id}` · `/api/jobs/{id}/log` | Job state |
+| `POST /api/jobs/{id}/stop` | Stop any job |
+| `POST /api/evaluate` · `GET /api/evaluations?run=` | Fixed-seed evaluation |
+| `POST /api/compare` · `GET /api/comparisons` | Agent comparison |
+| `POST /api/benchmark` · `GET /api/benchmarks` | Machine throughput |
+| `GET /api/experiments` · `POST /api/experiments/run` | The experiment lab |
+| `GET /api/checkpoints` · `POST /api/checkpoints/label` · `/delete` | Checkpoints |
+| `POST /api/game/ai/start` · `POST /api/game/human/start` | Start a game |
+| `GET /api/game/{id}?since=` · `POST /api/game/{id}/move` · `/control` | Play it |
+| `GET /api/system` · `GET /api/logs` | Diagnostics |
+| `GET /api/settings` · `POST /api/settings` | UI preferences |
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `AI2048_HOME` | Where `checkpoints/` and `data/` live. Defaults to the project directory — useful for keeping 268 MB weight files off a small system disk. |
+| `AI2048_START_METHOD` | Force the multiprocessing start method (`fork` or `spawn`); mainly for exercising the Windows/macOS path on Linux. |
+| `DASHBOARD_VERBOSE` | Log every HTTP request. |
+
+```bash
+AI2048_HOME=/data/2048 python3 server.py
+```
 
 ---
 
 ## Tests and benchmarks
 
 ```bash
-python3 -m unittest discover -s tests             # all 142 tests (~70 s)
+python3 -m unittest discover -s tests             # all 243 tests (~2 min)
 python3 -m unittest discover -s tests -v          # verbose
 python3 -m unittest discover -s tests -q          # quiet
 python3 -m unittest tests.test_engine             # one module
 python3 -m unittest tests.test_learning
 python3 -m unittest tests.test_end_to_end         # drives the real CLIs
+python3 -m unittest tests.test_control_center     # drives the web interface
+python3 -m unittest tests.test_api                # API routing and validation
+python3 -m unittest tests.test_server             # HTTP and security boundary
+python3 -m unittest tests.test_jobs               # the job manager
 python3 tests/benchmark_engine.py                 # throughput benchmark
 ```
 
@@ -344,6 +425,16 @@ py server.py
 
 ## A typical session
 
+One command, then the browser — this is the recommended path:
+
+```bash
+git clone https://github.com/esturisky7-ux/2048-ai.git
+cd 2048-ai
+python3 server.py --open
+```
+
+The command-line equivalent, for scripting and headless machines:
+
 ```bash
 git clone https://github.com/esturisky7-ux/2048-ai.git
 cd 2048-ai
@@ -351,6 +442,5 @@ python3 train.py --check                                  # confirm it works
 python3 train.py --games 20000                            # train (~50 min on a slow laptop)
 python3 evaluate.py --games 200                           # measure it
 python3 evaluate.py --compare random heuristic learned --games 200
-python3 server.py --open                                  # watch it play
 python3 train.py --resume --workers 2                     # keep going, faster
 ```

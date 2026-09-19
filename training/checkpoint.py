@@ -29,8 +29,14 @@ from pathlib import Path
 # Paths are derived from this file's location with pathlib, so they carry the
 # right separator on every OS and nothing depends on the working directory.
 ROOT = Path(__file__).resolve().parent.parent
-CHECKPOINT_ROOT = ROOT / "checkpoints"
-DATA_ROOT = ROOT / "data"
+
+# Where runs are stored. ``AI2048_HOME`` moves everything the project writes
+# somewhere else -- useful for keeping 268 MB weight files off a small system
+# disk, and essential for tests, because a child process cannot inherit a
+# monkeypatched module global but does inherit the environment.
+HOME = Path(os.environ.get("AI2048_HOME") or ROOT)
+CHECKPOINT_ROOT = HOME / "checkpoints"
+DATA_ROOT = HOME / "data"
 
 
 def python_command() -> str:

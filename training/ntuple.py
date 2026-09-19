@@ -56,7 +56,8 @@ from typing import Sequence
 # set, so they are cached here. Every process that touches the network (two
 # training workers, the evaluator, the dashboard) pays ~0.2 s instead of ~4 s.
 # The cache is pure derived data: deleting it only costs one rebuild.
-CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "tables"
+CACHE_DIR = Path(os.environ.get("AI2048_HOME")
+                 or Path(__file__).resolve().parent.parent) / "data" / "tables"
 
 # ---------------------------------------------------------------------------
 # Tuple sets

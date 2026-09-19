@@ -25,10 +25,10 @@ import time
 from pathlib import Path
 
 from training.config import load_config, resolve_path, EXPERIMENT_DIR
-from training.checkpoint import Run, atomic_write_json
+from training.checkpoint import DATA_ROOT, Run, atomic_write_json
 
 ROOT = Path(__file__).resolve().parent.parent
-RESULTS_DIR = ROOT / "data" / "experiments"
+RESULTS_DIR = Path(DATA_ROOT) / "experiments"
 
 
 def result_path(name: str) -> Path:

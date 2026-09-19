@@ -14,13 +14,13 @@ a live local dashboard.**
 **TD(0) n-tuple learning · Fixed-seed evaluation · Pure Python standard library**
 
 **📖 [Read the Wiki](https://github.com/esturisky7-ux/2048-ai/wiki)** — task-oriented
-guides for installation, training, evaluation, the dashboard and troubleshooting
+guides for installation, training, evaluation, the control center and troubleshooting
 
 </div>
 
-![The local dashboard showing a real 66,000-game training run, performance graphs, achievement rates, and the learned agent playing 2048](docs/images/dashboard.png)
+![The 2048 AI Control Center showing a live training run: status, records, achievement rates and six interactive charts](docs/images/control-center.png)
 
-<p align="center"><sub>The included local dashboard, showing real output from the recorded 66,000-game training run.</sub></p>
+<p align="center"><sub>The control center during a live two-worker training run — every number on this page is read from the running system.</sub></p>
 
 > **Recorded evaluation:** after 66,000 self-play training games, the learned
 > agent averaged **55,626** over 200 fixed-seed evaluation games, reached the
@@ -34,56 +34,51 @@ guides for installation, training, evaluation, the dashboard and troubleshooting
 ```bash
 git clone https://github.com/esturisky7-ux/2048-ai.git
 cd 2048-ai
-python3 train.py --games 1000
+python3 server.py
 ```
 
-That is the whole installation. On **Windows**, write `py` or `python` instead
-of `python3`:
+Then open **<http://127.0.0.1:8000>**.
+
+That is the whole installation, and that is the only terminal command you
+need. Everything else — training, stopping and resuming it, evaluation, agent
+comparisons, experiments, checkpoints, watching the AI play, playing yourself,
+benchmarks and diagnostics — happens in the browser.
+
+On **Windows**, write `py` (or `python`) instead of `python3`:
 
 ```powershell
 git clone https://github.com/esturisky7-ux/2048-ai.git
 cd 2048-ai
-py train.py --games 1000
-```
-
-A thousand games takes about a minute and already produces an agent that
-reaches the 512 tile. Then:
-
-```bash
-python3 train.py --resume          # keep training where you left off
-python3 server.py                  # dashboard at http://127.0.0.1:8000/
-python3 evaluate.py --games 200    # how good is it, with error bars
-```
-
-Every command explains itself:
-
-```bash
-python3 train.py --help
-python3 evaluate.py --help
-python3 server.py --help
-python3 experiment.py --help
-```
-
-And to confirm the install works before doing anything else:
-
-```bash
-python3 train.py --check
+py server.py
 ```
 
 ```
-2048-ai 1.0.0  (Python 3.12.3 on Linux x86_64, 64-bit)
-project root  /home/you/2048-ai
-engine        ok  (merge rules, 16 empty cells on a blank board)
-training      ok  (20 games, best score 5,552)
-checkpoint    ok  (wrote meta.json and weights.f32)
-workers       start method 'fork'
+  2048 AI Control Center
+  Dashboard:     http://127.0.0.1:8000
+  Platform:      Linux x86_64
+  Python:        3.12.3
+  AI checkpoint: None yet — the dashboard will offer to train one
+  Training:      Stopped
+
+  Press Ctrl+C to stop the server.
 ```
+
+`python3 server.py --open` launches your browser too.
+
+**First time?** The control center notices there is no trained agent and offers
+to start one. A thousand games takes about a minute and already reaches the 512
+tile; it suggests a worker count from your CPU without claiming the whole
+machine.
+
+The command line has not gone anywhere — see
+[The command line](#the-command-line) — but you no longer need it.
 
 ---
 
 ## Table of contents
 
 - [Overview](#overview)
+- [The control center](#the-control-center)
 - [Features](#features)
 - [How it works](#how-it-works)
 - [The AI: TD(0) afterstate n-tuple learning](#the-ai-td0-afterstate-n-tuple-learning)
@@ -97,8 +92,9 @@ workers       start method 'fork'
 - [Resuming training](#resuming-training)
 - [Using multiple workers](#using-multiple-workers)
 - [Evaluating an agent](#evaluating-an-agent)
-- [Running the dashboard](#running-the-dashboard)
+- [Running the control center](#running-the-control-center)
 - [Watching the AI play](#watching-the-ai-play)
+- [The command line](#the-command-line)
 - [Running experiments](#running-experiments)
 - [Running tests](#running-tests)
 - [Understanding checkpoints](#understanding-checkpoints)
@@ -137,11 +133,52 @@ the 2048 tile in about 89% of games and has produced the 8192 tile.
 
 ---
 
+## The control center
+
+`python3 server.py` starts a local web application that drives all of it. It is
+the primary interface; the command-line tools remain for scripting and headless
+use.
+
+| Page | What you do there |
+|---|---|
+| **Overview** | Live status, the current run, records, achievement rates, and seven interactive charts. Hover any chart for the exact value and the game number it came from. |
+| **Training** | Start a new run with sensible defaults (basic and advanced settings), or continue an existing one — "train 10,000 more", a custom amount, or continuously. Live throughput, ETA, and a **graceful stop** that finishes the current game and writes a checkpoint. |
+| **Play** | Watch any agent play, with pause, single-step, restart and speeds from 0.25× to maximum. Play 2048 yourself with the arrow keys, WASD, swipe or on-screen buttons. Or take the AI on in **You vs AI**. |
+| **Evaluate** | Run a fixed-seed evaluation on any agent or saved checkpoint, watch its progress, and get the mean with a 95% confidence interval, percentiles and Wilson intervals for every tile rate. Export JSON or CSV. |
+| **Compare** | Several agents over the identical seeded games, with the confidence intervals drawn so overlap is visible rather than hidden. |
+| **Experiments** | Run any of the 18 shipped configurations and compare the results, with the sample size shown next to every number. |
+| **Checkpoints** | Every saved agent with its games, evaluation score, size and configuration. Watch, evaluate, resume, label, or delete with confirmation. |
+| **Benchmarks** | Engine throughput, per-agent decision rate and real training moves/second, with the CPU and Python that produced them. |
+| **Logs / System** | Recent events, and platform, versions, storage and running job PIDs. |
+
+<p align="center">
+  <img src="docs/images/play.png" width="49%" alt="Watching the trained agent play, with pause, step and speed controls">
+  <img src="docs/images/training.png" width="49%" alt="The training page during a live two-worker run">
+</p>
+
+Nothing in the interface is mocked. Every number is read from the running
+system, and pages that have no data say so rather than inventing any.
+
+**How it works.** The browser talks to a small JSON API. Anything slow —
+training, evaluation, comparison, benchmarking, experiments — is handed to a
+**job manager** that runs it as a supervised subprocess, so a long job never
+blocks the web server and a crash in one cannot take the server down.
+Live updates arrive over Server-Sent Events, with polling as a fallback.
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#the-control-center) has the
+detail.
+
+**Still zero dependencies.** No React, no npm, no Flask, no Docker. The server
+is `http.server`; the front end is hand-written HTML, CSS and JavaScript that
+loads nothing from a CDN.
+
+---
+
 ## Features
 
 | | |
 |---|---|
-| **Zero dependencies** | Python 3.10+ standard library only. No install step. |
+| **Browser-first** | `python3 server.py`, then do everything at `http://127.0.0.1:8000`. |
+| **Zero dependencies** | Python 3.10+ standard library only. No install step, no npm. |
 | **Fast pure-Python engine** | 64-bit bitboards, precomputed row tables, ~140k moves/s. |
 | **Learns from self-play** | TD(0) on afterstates with an n-tuple value network. |
 | **Crash-safe checkpoints** | Memory-mapped weights, atomic metadata, Ctrl-C always saves. |
@@ -149,8 +186,10 @@ the 2048 tile in about 89% of games and has produced the 8192 tile.
 | **Multi-core training** | `--workers N` shares one weight table across processes. |
 | **Honest evaluation** | Identical seeded games per agent, 95% CIs, Wilson intervals for tile rates. |
 | **Experiment framework** | 18 shipped configs; each result stores the config that produced it. |
-| **Live dashboard** | Training status, charts, records, and a game viewer, all localhost-only. |
-| **Tested** | 142 tests, run on Linux, Windows and macOS by CI. |
+| **Supervised jobs** | Training and evaluation run as subprocesses with real state, progress and a graceful stop. |
+| **Play it yourself** | Human play and You-vs-AI, on the same Python engine the AI uses. |
+| **Localhost-only** | Binds to 127.0.0.1, refuses cross-origin requests, never takes a filesystem path from the browser. |
+| **Tested** | 243 tests, run on Linux, Windows and macOS by CI. |
 
 ---
 
@@ -350,7 +389,7 @@ evaluation/   the fixed, seeded evaluation procedure and its statistics
 experiments/  runs a config, evaluates it, stores config+result together
 dashboard/    stdlib HTTP server, JSON API, static front end, live game thread
 config/       default.json plus 18 experiment configs
-tests/        142 tests: unit, integration, end-to-end, plus a benchmark
+tests/        243 tests: unit, integration, API, end-to-end, plus a benchmark
 docs/         architecture and command reference
 ```
 
@@ -631,77 +670,116 @@ standard normal-approximation interval.
 
 ---
 
-## Running the dashboard
+## Running the control center
 
 ```bash
 python3 server.py
 ```
 
-Then open **<http://127.0.0.1:8000/>**.
+Then open **<http://127.0.0.1:8000>**.
 
 ```bash
 python3 server.py --open            # start it and open a browser
 python3 server.py --port 8080       # if 8000 is taken
+python3 server.py --quiet           # one line instead of the banner
 ```
 
-The dashboard is a plain `http.server` with no framework and no dependencies.
-It **binds to 127.0.0.1 (localhost) only** — it is reachable from your own
-machine and nothing else. It has no authentication, so that default is
-deliberate; see [Security and networking](#security-and-networking).
+Stop it with Ctrl-C. Shutdown is graceful: the server stops accepting work,
+asks any running job to stop the same way Ctrl-C would, waits for training to
+finish its game and write a checkpoint, and only then exits. A training run is
+never lost because the web server went away.
 
-It never talks to the training process. It reads the run's files and, for live
-games, opens the weights *read-only*, so nothing it does can disturb or corrupt
-a run in progress. You can start it before, during or after training.
+It **binds to 127.0.0.1** — your own machine and nothing else. There is no
+authentication, which is exactly why that default matters; see
+[Security and networking](#security-and-networking).
 
-What the page shows:
+The control center never interferes with training. Slow work runs in separate
+processes, and the live game viewer opens the weights *read-only*, so nothing
+you do in the browser can corrupt a run in progress.
 
-| Panel | What it tells you |
-|---|---|
-| **Training status** | Whether a trainer is running right now, total games played, **games/sec** and **moves/sec**, this session's duration and games, cumulative training time, when the checkpoint was last written, and the most recent fixed evaluation. |
-| **Games played** | The run's lifetime game count — the number that matters for "how far along is this?". |
-| **Records** | Best score ever and the game it happened on, highest tile ever, longest game in moves, total games and moves, plus a bar per milestone tile (512 / 1024 / 2048 / 4096 / 8192) showing the share of all games that reached it. |
-| **Score graphs** | Rolling mean and median score against games played, with the fixed-evaluation points overlaid so you can see training progress and measured progress on the same axis. |
-| **Tile achievement rates** | The percentage of recent games reaching each milestone tile, over the whole run. This is usually the clearest picture of learning. |
-| **Highest tile reached** | The best tile in each rolling window — a staircase that steps up as the agent breaks through 2048, 4096, 8192. |
-| **Evaluations** | Every fixed evaluation ever run for this run, with its confidence interval, so improvements can be distinguished from luck. |
-| **Live game viewer** | A real game being played move by move, with score, move count, max tile and the last direction played. |
-| **Agent selector** | Which agent plays in the viewer: learned, expectimax, heuristic or random — plus a search-depth selector for the two that can search. |
-| **Playback speeds** | 0.25×, 0.5×, 1×, 2×, 5× or Maximum. |
-| **Run selector** | Switch between training runs; the page remembers it in the URL. |
+### Keyboard shortcuts
 
-Charts are drawn on `<canvas>` by about 200 lines of hand-written JavaScript.
-There is no charting library and no CDN: the page loads nothing from the
-internet.
+`g` then `o`/`t`/`p`/`e`/`c`/`k`/`l`/`s` jumps between pages, arrow keys or
+WASD play a human game, `Space` pauses a watched game, and `?` lists them all.
 
 ---
 
 ## Watching the AI play
 
-Open the dashboard, pick an agent in the **Live game** panel and press **Watch
-game**.
+**Play ▸ Watch the AI** in the control center. Pick an agent, press **Start
+game**, and watch it move.
 
-The game is played by the dashboard in a throttled background thread that stays
-only a few dozen moves ahead of what your browser has consumed — so at 1× speed
-it uses almost no CPU, and training keeps the machine to itself. The server
-process also lowers its own scheduling priority on start-up.
+![Watching the trained agent, with score, move count, max tile and per-move decision time](docs/images/play.png)
 
-A particular game can be linked directly, which is how the screenshot at the
-top of this page was produced:
+| Control | What it does |
+|---|---|
+| Agent | Learned, expectimax, heuristic or random |
+| Search depth | For learned and expectimax; depth 1 is the plain trained policy |
+| Checkpoint | Play with a frozen snapshot instead of the current weights |
+| Speed | 0.25×, 0.5×, 1×, 2×, 5×, 10× or maximum |
+| Pause / Step / Restart / Stop | Including single-stepping one move at a time |
+| **Watch current AI** | One click: load the latest checkpoint and go |
+
+The game is played by the server in a throttled background thread that stays
+only a few dozen moves ahead of what your browser has consumed, so slow
+playback costs almost no CPU and training keeps the machine.
+
+A particular game can be linked directly:
 
 ```
-http://127.0.0.1:8000/?watch=learned&depth=1&speed=5&seed=1
+http://127.0.0.1:8000/?watch=learned&depth=1&speed=5&seed=1#/play/watch
 ```
 
 | Parameter | Meaning |
 |---|---|
 | `watch` | `learned`, `expectimax`, `heuristic` or `random` |
 | `depth` | search depth, for `expectimax` and `learned` |
-| `speed` | `0.25`, `0.5`, `1`, `2`, `5`, or `0` for maximum |
+| `speed` | `0.25`, `0.5`, `1`, `2`, `5`, `10`, or `0` for maximum |
 | `seed` | replays exactly the same game, move for move |
-| `run` | which training run's weights to use |
+| `live=poll` | use polling instead of the event stream |
 
-Watching `expectimax` at depth 3 is a good way to see how differently a search
-player and a learned player move.
+### Play it yourself
+
+**Play ▸ Play yourself** gives you the board, with arrow keys, WASD, swipe or
+on-screen buttons. **You vs AI** lets you play a seeded game and then watches
+the trained agent play the same one.
+
+Both use the **Python engine**, not a second implementation in JavaScript —
+your game follows exactly the rules the AI trains on. (One game each is for
+fun, not a measurement; [Evaluate](#evaluating-an-agent) is how agents are
+actually compared.)
+
+---
+
+## The command line
+
+The web interface is the *preferred* way to use the project, not the only one.
+Every command-line tool still works exactly as before, which is what you want
+for scripting, automation, headless machines and CI:
+
+```bash
+python3 train.py --resume --games 20000 --workers 2
+python3 evaluate.py --compare random heuristic learned --games 200
+python3 experiment.py --run baseline --games 5000
+python3 tests/benchmark_engine.py
+python3 train.py --check
+```
+
+Both interfaces drive the same code and the same files, so they compose: start
+a run from the terminal and watch it in the browser, or start one in the
+browser and inspect its checkpoint with `train.py --list-runs`. The control
+center notices a run started elsewhere and says so rather than pretending it
+owns it.
+
+`docs/COMMANDS.md` is the full reference. One addition worth knowing:
+
+```bash
+AI2048_HOME=/somewhere/else python3 server.py
+```
+
+moves everything the project writes — checkpoints, run data, caches — somewhere
+other than the project directory, which is useful when 268 MB weight files do
+not belong on your system disk.
 
 ---
 
@@ -738,7 +816,7 @@ python3 tests/benchmark_engine.py                # throughput benchmark
 
 On Windows use `py -m unittest discover -s tests`.
 
-**142 tests.** What they actually check:
+**243 tests.** What they actually check:
 
 - **`test_engine.py`** — merge rules including the awkward cases (`2 2 2 2` →
   `4 4 . .`, `4 4 8 8` → `8 16 . .`), that a freshly merged tile cannot merge
@@ -765,7 +843,26 @@ On Windows use `py -m unittest discover -s tests`.
   and `server.py` as real subprocesses: checkpoint, resume from the right game
   count, **Ctrl-C saves before exiting**, two workers train one shared
   checkpoint under *both* process start methods, evaluation is reproducible,
-  the dashboard serves its pages and streams real game frames.
+  and a run created from the command line is visible and playable in the
+  control center.
+- **`test_jobs.py`** — the job manager: jobs reach the right terminal state, a
+  **stopped job gets to save before it exits**, an unresponsive child is
+  escalated rather than hanging shutdown, two jobs cannot work on one run, and
+  finished jobs are trimmed while live ones are not.
+- **`test_api.py`** — every route; run names that are not safe path components;
+  numeric ranges; agent allowlists; **checkpoint identifiers that try to become
+  file paths**; game sessions and their controls; settings clamping. Its
+  sandbox is itself tested, because an earlier version of it launched real
+  training against a real checkpoint directory.
+- **`test_server.py`** — the HTTP boundary over a real socket: path traversal,
+  the CSRF header, cross-origin rejection, hardening headers, no CORS, mutating
+  routes unreachable by GET, oversized and malformed bodies, and the event
+  stream.
+- **`test_control_center.py`** — the whole product, start to finish: start the
+  server, train, watch progress update, stop gracefully, resume, evaluate,
+  watch the agent play, play a human game, read the statistics, list
+  checkpoints, benchmark, **restart the server and confirm everything is still
+  there**, then delete a checkpoint and shut down cleanly.
 
 ---
 
@@ -1037,6 +1134,7 @@ Python, platform and worker start method — when opening an issue.
 │
 ├── engine/
 │   ├── board.py               bitboard core: move tables, spawn, queries
+│   ├── benchmark.py           throughput measurements, shared by CLI and UI
 │   └── game.py                small stateful wrapper used outside training
 │
 ├── agents/
@@ -1058,16 +1156,22 @@ Python, platform and worker start method — when opening an issue.
 ├── evaluation/evaluator.py    fixed seeded evaluation + confidence intervals
 ├── experiments/runner.py      experiment execution and comparison tables
 │
-├── dashboard/
-│   ├── server.py              stdlib HTTP server and JSON API
-│   ├── live.py                throttled live-game thread
-│   └── static/                index.html, app.js, style.css (no CDN, no libs)
+├── dashboard/                 the control center
+│   ├── server.py              HTTP transport, SSE, static files, guards
+│   ├── api.py                 routing, validation and payload building
+│   ├── jobs.py                job manager: supervised subprocesses
+│   ├── runner.py              job worker for evaluation/compare/benchmark
+│   ├── games.py               AI and human game sessions (Python engine)
+│   ├── store.py               checkpoint ids, saved results, UI settings
+│   ├── sysinfo.py             platform diagnostics, degrading gracefully
+│   ├── events.py              the event log behind the Logs page
+│   └── static/                HTML, CSS and JS — no CDN, no framework, no build
 │
 ├── config/
 │   ├── default.json           the default configuration
 │   └── experiments/           18 experiment configs
 │
-├── tests/                     142 tests + the engine benchmark
+├── tests/                     243 tests + the engine benchmark
 ├── docs/
 │   ├── ARCHITECTURE.md        how the pieces fit together, and why
 │   ├── COMMANDS.md            command reference, with Windows equivalents
@@ -1085,19 +1189,39 @@ This project makes **no network connections at all**. It downloads nothing,
 uploads nothing, and contacts no telemetry service. The dashboard's front end
 loads no CDN scripts, fonts or stylesheets.
 
-The one thing that listens is the dashboard, and it binds to **127.0.0.1** —
-your own machine only — unless you explicitly pass `--host`. It has no
-authentication of any kind, so:
+The one thing that listens is the control center, and it binds to
+**127.0.0.1** — your own machine only — unless you explicitly pass `--host`.
 
-- Do not expose it to a network you do not fully control. If you pass a
-  non-loopback `--host`, it prints a warning, and you should believe it.
-- Anything reachable at that address can read your training statistics and ask
-  the server to play games.
+That default matters more than it used to. This server can **start processes
+and delete files**, so its endpoints are privileged local controls rather than
+a read-only dashboard. It has no authentication, and three things enforce the
+boundary instead:
 
-Inputs from the browser are validated: agent names are checked against the
-known list, search depth is clamped, malformed JSON gets a 400, and static file
-serving is confined to `dashboard/static/` with path traversal rejected.
-Responses carry `X-Content-Type-Options: nosniff` and `X-Frame-Options: DENY`.
+- **Loopback by default.** A non-loopback `--host` prints a warning that
+  recommends an SSH tunnel instead. Believe it.
+- **A required custom header.** Every mutating request must carry
+  `X-2048-Request`, which a cross-origin page cannot set without a CORS
+  preflight that is never granted — so a random website you visit cannot POST
+  to your training server. Any `Origin` header present must be loopback.
+- **No filesystem path ever comes from the browser.** Checkpoints are
+  addressed by identifier, validated against a strict pattern, rebuilt into a
+  path, and then verified to still be inside the checkpoint directory. Run
+  names must be safe single path components on every platform.
+
+Inputs are validated throughout: agent names and job actions are allowlists,
+numbers are range-checked, search depth is clamped, malformed or oversized
+bodies get a 400 or 413, and static serving is confined to `dashboard/static/`
+with traversal rejected. Job commands are built as explicit argument lists —
+nothing is ever passed through a shell. Responses carry
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, a
+`Content-Security-Policy` that allows scripts only from this origin, and no
+CORS headers at all.
+
+For remote access, do not expose the port. Forward it:
+
+```bash
+ssh -L 8000:127.0.0.1:8000 you@the-machine
+```
 
 The repository contains no credentials, keys or tokens, and `.gitignore`
 carries patterns for the usual secret filenames so one cannot be committed by
