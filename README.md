@@ -34,23 +34,15 @@ guides for installation, training, evaluation, the control center and troublesho
 ```bash
 git clone https://github.com/esturisky7-ux/2048-ai.git
 cd 2048-ai
-python3 server.py
+./start.sh
 ```
 
-Then open **<http://127.0.0.1:8000>**.
-
-That is the whole installation, and that is the only terminal command you
-need. Everything else — training, stopping and resuming it, evaluation, agent
-comparisons, experiments, checkpoints, watching the AI play, playing yourself,
-benchmarks and diagnostics — happens in the browser.
-
-On **Windows**, write `py` (or `python`) instead of `python3`:
-
-```powershell
-git clone https://github.com/esturisky7-ux/2048-ai.git
-cd 2048-ai
-py server.py
-```
+That starts the control center and opens **<http://127.0.0.1:8000>** in your
+browser. It is the only command you need: there is no separate front end to
+build or start, no database and nothing to install. Training, stopping and
+resuming it, evaluation, agent comparisons, experiments, checkpoints, watching
+the AI play, playing yourself, benchmarks and diagnostics all happen in the
+browser.
 
 ```
   2048 AI Control Center
@@ -63,7 +55,16 @@ py server.py
   Press Ctrl+C to stop the server.
 ```
 
-`python3 server.py --open` launches your browser too.
+**To stop it,** press **Ctrl+C** in that terminal, or run `./stop.sh` from
+another one. Running training always finishes its game and saves first.
+
+On **Windows**, run the server directly (`py` is the Python launcher):
+
+```powershell
+git clone https://github.com/esturisky7-ux/2048-ai.git
+cd 2048-ai
+py server.py --open
+```
 
 **First time?** The control center notices there is no trained agent and offers
 to start one. A thousand games takes about a minute and already reaches the 512
@@ -77,6 +78,17 @@ The command line has not gone anywhere — see
 
 ## Table of contents
 
+**Getting it running**
+
+- [Requirements](#requirements)
+- [First-time setup](#first-time-setup)
+- [Starting the application](#starting-the-application)
+- [Stopping and restarting](#stopping-and-restarting)
+- [Ports](#ports)
+- [Troubleshooting](#troubleshooting)
+
+**The project**
+
 - [Overview](#overview)
 - [The control center](#the-control-center)
 - [Features](#features)
@@ -84,15 +96,10 @@ The command line has not gone anywhere — see
 - [The AI: TD(0) afterstate n-tuple learning](#the-ai-td0-afterstate-n-tuple-learning)
 - [The four agents](#the-four-agents)
 - [Project architecture](#project-architecture)
-- [Requirements](#requirements)
-- [Linux installation](#linux-installation)
-- [macOS installation](#macos-installation)
-- [Windows installation](#windows-installation)
 - [Starting a new training run](#starting-a-new-training-run)
 - [Resuming training](#resuming-training)
 - [Using multiple workers](#using-multiple-workers)
 - [Evaluating an agent](#evaluating-an-agent)
-- [Running the control center](#running-the-control-center)
 - [Watching the AI play](#watching-the-ai-play)
 - [The command line](#the-command-line)
 - [Running experiments](#running-experiments)
@@ -100,11 +107,294 @@ The command line has not gone anywhere — see
 - [Understanding checkpoints](#understanding-checkpoints)
 - [Performance and benchmarks](#performance-and-benchmarks)
 - [Platform support](#platform-support)
-- [Troubleshooting](#troubleshooting)
 - [Project structure](#project-structure)
 - [Security and networking](#security-and-networking)
+- [Git workflow](#git-workflow)
 - [Contributing](#contributing)
 - [License](#license)
+
+---
+
+## Requirements
+
+| What | Version | Why |
+|---|---|---|
+| **Python** | **3.10 or newer** (3.10, 3.12 and 3.13 are tested) | Runs everything: the web server, the UI's API, training and evaluation |
+| **A web browser** | any current one | The control center is a web page at <http://127.0.0.1:8000> |
+| **Git** | any | To clone and update the repository. Optional: GitHub's **Code ▸ Download ZIP** works too |
+| Disk space | ~300 MB free | The default network's weight file (268 MB; created sparse on Linux/macOS, so it only grows as used) |
+
+That is the complete list. In particular you do **not** need:
+
+- **Node.js or npm** — the front end is plain HTML, CSS and JavaScript served
+  by the Python server. There is no `package.json`, no build step and no
+  separate front-end server.
+- **pip packages or a virtual environment** — only the Python standard library
+  is used, so there is no `requirements.txt` and nothing to `pip install`. A
+  virtual environment does no harm if you prefer one.
+- **A GPU, Docker, a database or any environment variables.**
+
+Check your Python:
+
+```bash
+python3 --version        # Linux and macOS
+py --version             # Windows
+```
+
+If it is missing or older than 3.10:
+
+- **Linux (Debian/Ubuntu):** `sudo apt update && sudo apt install python3 git`
+- **macOS:** the installer from <https://www.python.org/downloads/macos/>, or
+  `brew install python git`. (macOS ships an old or stub `python3`; if the
+  command opens a developer-tools prompt, install one of these.)
+- **Windows:** the installer from <https://www.python.org/downloads/windows/>
+  — tick **“Add python.exe to PATH”** — and Git from
+  <https://git-scm.com/downloads>. Use `py` rather than `python3`, which may
+  open the Microsoft Store instead.
+
+---
+
+## First-time setup
+
+**Linux and macOS:**
+
+```bash
+git clone https://github.com/esturisky7-ux/2048-ai.git
+cd 2048-ai
+python3 train.py --check      # optional: verifies Python and the engine, ~2 seconds
+./start.sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+git clone https://github.com/esturisky7-ux/2048-ai.git
+cd 2048-ai
+py train.py --check           # optional
+py server.py --open
+```
+
+There is no install step: no `pip install`, no `npm install`, nothing to
+build. The `checkpoints/` and `data/` folders are created the first time you
+train; they are deliberately not in Git (see
+[Understanding checkpoints](#understanding-checkpoints)).
+
+Then, in the browser, press **Start your first training run**. You do not need
+to train from the terminal first.
+
+Platform notes:
+
+- **macOS and Windows** start multi-worker training with `spawn` rather than
+  `fork` (forking is not safe on macOS once system frameworks are loaded, and
+  does not exist on Windows). The only visible difference is that each worker
+  spends a few seconds building its lookup tables at start-up.
+- **Windows:** the weight file is not sparse on NTFS, so the default network
+  really does occupy 268 MB from the first run. Choose the `4x5` (17 MB) or
+  `8x4` (2 MB) network on the Training page if that matters.
+
+---
+
+## Starting the application
+
+```bash
+./start.sh
+```
+
+This is the one command to use. It:
+
+1. changes into the project folder, so it works from any directory
+   (`~/2048-ai/start.sh` is fine);
+2. finds a Python 3.10 or newer (`python3`, `python`, or `python3.1x`);
+3. runs **`server.py`**, the control center, which serves the web page, its
+   JSON API and the live-update stream from **one process on one port**;
+4. opens <http://127.0.0.1:8000> in your browser once the server is listening.
+
+Training, evaluation, comparisons, benchmarks and experiments are **not**
+separate things to start. You start them from the browser, and the server
+runs each one as a supervised background process.
+
+Options — anything `server.py` accepts can be added:
+
+```bash
+./start.sh --port 8080         # use another port
+./start.sh --restart           # stop the one that is running, start fresh
+./start.sh --quiet             # one line of output instead of the banner
+NO_BROWSER=1 ./start.sh        # do not open a browser window
+PYTHON=python3.12 ./start.sh   # use a particular Python
+```
+
+Running `./start.sh` while it is already running is harmless: it prints the
+address of the running one and exits.
+
+**Without the script** (Windows, or if you prefer), run the server directly —
+this is exactly what `start.sh` does:
+
+```bash
+python3 server.py --open       # Linux / macOS
+py server.py --open            # Windows
+```
+
+**Only one terminal is needed.** Older versions of these instructions ran
+`train.py` in one terminal and the dashboard in a second; that still works,
+but it is no longer necessary.
+
+---
+
+## Stopping and restarting
+
+| To… | Linux / macOS | Windows |
+|---|---|---|
+| **Stop** | **Ctrl+C** in the server's terminal, or `./stop.sh` from any terminal | **Ctrl+C**, or `py server.py --stop` |
+| **Restart** | `./start.sh --restart` | `py server.py --restart` |
+| **Stop one on another port** | `./stop.sh --port 8080` | `py server.py --stop --port 8080` |
+
+Every way of stopping is safe. The server stops accepting work, asks any
+running job to stop the way Ctrl+C would, **waits for training to finish its
+current game and write a checkpoint**, and only then exits. That can take a
+few seconds with a strong agent, whose games are long. `./stop.sh` waits for
+all of it and then prints `stopped.`
+
+Closing the terminal window, `kill <pid>`, an editor's stop button and logging
+out are all handled the same way — training is never left running on its own.
+
+Press Ctrl+C a second time only if you really want to quit without waiting.
+
+**Restart after every `git pull`** that changes Python files. The page is
+re-read on every load, but the server keeps running the code it started with
+until it is restarted.
+
+Training resumes from its checkpoint: after a restart, open **Training** and
+choose **Continue**.
+
+---
+
+## Ports
+
+| Port | Bound to | Used for |
+|---|---|---|
+| **8000** (TCP) | `127.0.0.1` only | Everything: the web page (`/`), static files (`/static/…`), the JSON API (`/api/…`) and live updates (`/api/stream`, Server-Sent Events) |
+
+That is the only port. Nothing else listens: training and evaluation jobs are
+local background processes that open no ports, and the front end talks to the
+server on the same address it was loaded from — so there is no CORS setup, no
+API URL to configure, and no second port for a front-end dev server.
+
+Change it with `--port` (`./start.sh --port 8080`), and pass the same
+`--port` to `./stop.sh`. The server binds to your own machine only; see
+[Security and networking](#security-and-networking) before changing `--host`.
+
+Optional environment variables (none are required):
+
+| Variable | Effect |
+|---|---|
+| `NO_BROWSER=1` | `start.sh` does not open a browser |
+| `PYTHON=…` | `start.sh` uses this Python |
+| `AI2048_HOME=…` | Keep checkpoints, run data and caches somewhere other than the project folder |
+| `DASHBOARD_VERBOSE=1` | Log every HTTP request to the terminal |
+
+---
+
+## Troubleshooting
+
+### Starting and stopping
+
+**`The 2048 AI control center is already running at http://127.0.0.1:8000/`.**
+Not an error: one is already running (perhaps in another terminal window, or
+one you forgot about). Open that address. To replace it with a fresh one — for
+example after a `git pull` — run `./start.sh --restart`.
+
+**The page looks broken or out of date after `git pull`.**
+The web page is read from disk on every load, but the Python server keeps
+running the code it started with, so an old server behind a new page can
+disagree. Restart it with `./start.sh --restart` (`py server.py --restart` on
+Windows), then reload the page with Ctrl+Shift+R (Cmd+Shift+R on macOS).
+
+**`Another program is using that port` / `Address already in use`.**
+Something other than the control center has port 8000. Either stop that
+program, or use another port for both commands:
+`./start.sh --port 8080` and later `./stop.sh --port 8080`. To see what holds
+the port: `lsof -i :8000` (Linux/macOS) or `netstat -ano | findstr :8000`
+(Windows).
+
+**`./start.sh: Permission denied`.**
+The execute bit was lost (for example by copying the folder or unzipping a
+download). Restore it with `chmod +x start.sh stop.sh`, or run
+`bash start.sh`.
+
+**`/usr/bin/env: 'bash\r': No such file or directory`.**
+The script was saved with Windows line endings. The repository's
+`.gitattributes` prevents this for fresh clones; to repair an existing copy
+run `sed -i 's/\r$//' start.sh stop.sh` (on macOS: `sed -i '' 's/\r$//' start.sh stop.sh`).
+
+**`error: Python 3.10 or newer is required, and none was found`.**
+`start.sh` looks for `python3`, `python` and `python3.10`–`python3.13`.
+Install a newer Python (see [Requirements](#requirements)) or point it at one
+explicitly: `PYTHON=/path/to/python3.12 ./start.sh`.
+
+**No browser window opened.**
+`start.sh` opens one only when there is a desktop to open it on — not over
+SSH, for example. Open <http://127.0.0.1:8000> yourself. `NO_BROWSER=1
+./start.sh` turns it off on purpose.
+
+**Training says "started outside this control center".**
+That run is being trained by a process this server did not launch: a
+`train.py` you started in a terminal, or one left behind by an older version
+of the control center that was closed without stopping it. **Stop** still
+works on it (it sends the same Ctrl-C a terminal would, so it saves a
+checkpoint). Resuming the same run is refused until it has stopped, because two
+trainers writing one weight file would corrupt it. On Windows, stop it with
+Ctrl+C in its own window.
+
+**Training keeps running after I closed the terminal.**
+Fixed: closing the window, `kill`, an editor's stop button and logging out now
+all stop training cleanly, the same as Ctrl+C. If you have a trainer left over
+from before this fix, use **Stop** as described above, or `kill -INT <pid>`
+(the pid is shown on the Training page).
+
+### Everything else
+
+**`python3: command not found` (Windows).**
+Use `py` or `python`. `python3` is a Unix convention. If none of them work,
+Python is not on PATH — reinstall it with “Add python.exe to PATH” ticked.
+
+**`python` opens the Microsoft Store.**
+That is Windows' placeholder for a missing Python. Install the real one from
+<https://www.python.org/downloads/windows/> and use `py`.
+
+**`SyntaxError` on start-up.**
+You are on Python 3.9 or older. Check with `python3 --version`; 3.10 is the
+minimum.
+
+**`no trained weights at ... (run 'default' has not been trained yet)`.**
+Nothing has been trained yet, or you are pointing at the wrong run. Train
+something first (`python3 train.py --games 1000`) or pass `--run NAME`.
+
+**The dashboard says “no training process running” while training is running.**
+The dashboard decides from a heartbeat file and the trainer's PID. Check they
+are looking at the same run — the run selector is in the top right, and the URL
+carries `?run=NAME`.
+
+**Training is slower than the numbers in [Performance](#performance-and-benchmarks).**
+That is expected as the agent improves: better play means much longer games.
+Watch moves/sec instead of games/sec. If moves/sec is also low, check nothing
+else is using the CPU, and try `--workers N` up to your core count.
+
+**Training seems stuck at a low score.**
+Give it games. A few thousand games is early; the 2048 rate typically crosses
+50% somewhere around 10,000–15,000 games with the default settings.
+
+**I want to start over.**
+Delete the run's two directories: `checkpoints/<run>/` and `data/<run>/`. Or
+just train under a new `--run` name.
+
+**Disk filled up.**
+`data/tables/` holds rebuildable index caches (22–34 MB each) and
+`checkpoints/*/snapshots/` holds frozen weight copies (268 MB each with the
+default network). Both are safe to delete; the tables rebuild themselves.
+
+**Something else.**
+Run `python3 train.py --check` and include its output — it reports the version,
+Python, platform and worker start method — when opening an issue.
 
 ---
 
@@ -135,7 +425,7 @@ the 2048 tile in about 89% of games and has produced the 8192 tile.
 
 ## The control center
 
-`python3 server.py` starts a local web application that drives all of it. It is
+`./start.sh` (or `python3 server.py`) starts a local web application that drives all of it. It is
 the primary interface; the command-line tools remain for scripting and headless
 use.
 
@@ -171,13 +461,18 @@ detail.
 is `http.server`; the front end is hand-written HTML, CSS and JavaScript that
 loads nothing from a CDN.
 
+### Keyboard shortcuts
+
+`g` then `o`/`t`/`p`/`e`/`c`/`k`/`l`/`s` jumps between pages, arrow keys or
+WASD play a human game, `Space` pauses a watched game, and `?` lists them all.
+
 ---
 
 ## Features
 
 | | |
 |---|---|
-| **Browser-first** | `python3 server.py`, then do everything at `http://127.0.0.1:8000`. |
+| **Browser-first** | `./start.sh`, then do everything at `http://127.0.0.1:8000`. |
 | **Zero dependencies** | Python 3.10+ standard library only. No install step, no npm. |
 | **Fast pure-Python engine** | 64-bit bitboards, precomputed row tables, ~140k moves/s. |
 | **Learns from self-play** | TD(0) on afterstates with an n-tuple value network. |
@@ -189,7 +484,7 @@ loads nothing from a CDN.
 | **Supervised jobs** | Training and evaluation run as subprocesses with real state, progress and a graceful stop. |
 | **Play it yourself** | Human play and You-vs-AI, on the same Python engine the AI uses. |
 | **Localhost-only** | Binds to 127.0.0.1, refuses cross-origin requests, never takes a filesystem path from the browser. |
-| **Tested** | 243 tests, run on Linux, Windows and macOS by CI. |
+| **Tested** | 251 tests, run on Linux, Windows and macOS by CI. |
 
 ---
 
@@ -389,7 +684,7 @@ evaluation/   the fixed, seeded evaluation procedure and its statistics
 experiments/  runs a config, evaluates it, stores config+result together
 dashboard/    stdlib HTTP server, JSON API, static front end, live game thread
 config/       default.json plus 18 experiment configs
-tests/        243 tests: unit, integration, API, end-to-end, plus a benchmark
+tests/        251 tests: unit, integration, API, end-to-end, plus a benchmark
 docs/         architecture and command reference
 ```
 
@@ -398,143 +693,6 @@ Four command-line entry points sit on top: `train.py`, `evaluate.py`,
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture and
 [`docs/COMMANDS.md`](docs/COMMANDS.md) for a command reference.
-
----
-
-## Requirements
-
-- **Python 3.10 or newer.** Nothing else.
-- About **300 MB of free disk** for the default network's weight file (less on
-  Linux and macOS, where it is created sparse and only grows as it is used).
-- Any CPU. More cores help; a GPU is not used at all.
-
-If you do not have Python or Git yet, get them from the official sources:
-
-- Python — <https://www.python.org/downloads/>
-- Git — <https://git-scm.com/downloads>
-
-Git is only needed to *clone* this repository. If you prefer, use the green
-**Code ▸ Download ZIP** button on GitHub instead and skip Git entirely.
-
----
-
-## Linux installation
-
-Most distributions already ship Python 3. Check:
-
-```bash
-python3 --version
-```
-
-If that prints 3.10 or newer, you are done. Otherwise install it, for example
-on Debian/Ubuntu:
-
-```bash
-sudo apt update && sudo apt install python3 git
-```
-
-Then:
-
-```bash
-git clone https://github.com/esturisky7-ux/2048-ai.git
-cd 2048-ai
-python3 train.py --check
-python3 train.py --games 1000
-```
-
-Start the dashboard in a second terminal:
-
-```bash
-cd 2048-ai
-python3 server.py
-```
-
-and open <http://127.0.0.1:8000/>.
-
----
-
-## macOS installation
-
-macOS ships an old or stub `python3`. Check what you have:
-
-```bash
-python3 --version
-```
-
-If that is below 3.10 or opens the developer-tools prompt, install a current
-Python from <https://www.python.org/downloads/macos/> (the official installer
-is the simplest route) or with Homebrew:
-
-```bash
-brew install python git
-```
-
-Then:
-
-```bash
-git clone https://github.com/esturisky7-ux/2048-ai.git
-cd 2048-ai
-python3 train.py --check
-python3 train.py --games 1000
-```
-
-Dashboard, in a second Terminal tab:
-
-```bash
-cd 2048-ai
-python3 server.py --open
-```
-
-`--open` launches your browser at <http://127.0.0.1:8000/> automatically.
-
-> **macOS note.** Multi-worker training starts workers with `spawn` rather than
-> `fork`, because forking is not safe on macOS once system frameworks are
-> loaded. The only visible difference is that each worker spends a few seconds
-> building its lookup tables at startup. Single-worker training is unaffected.
-
----
-
-## Windows installation
-
-Install Python from <https://www.python.org/downloads/windows/> and **tick “Add
-python.exe to PATH”** in the installer. Install Git from
-<https://git-scm.com/downloads> if you want to clone rather than download a ZIP.
-
-Open **PowerShell** and check the install:
-
-```powershell
-py --version
-```
-
-`py` is the Python launcher that the official installer provides; it is the most
-reliable way to start Python on Windows. If `py` is not found, try `python`
-instead — everything below works with either. (`python3` generally does *not*
-work on Windows: typing it may open the Microsoft Store instead.)
-
-Clone and run:
-
-```powershell
-git clone https://github.com/esturisky7-ux/2048-ai.git
-cd 2048-ai
-py train.py --check
-py train.py --games 1000
-```
-
-Dashboard, in a second PowerShell window:
-
-```powershell
-cd 2048-ai
-py server.py --open
-```
-
-then open <http://127.0.0.1:8000/>.
-
-> **Windows notes.**
-> - The weight file is not sparse on NTFS, so the default network really does
->   occupy 268 MB on disk from the first run. Use `--tuple-set 4x5` (17 MB) or
->   `--tuple-set 8x4` (2 MB) if that matters.
-> - Multi-worker training uses `spawn`; see the macOS note above.
-> - Ctrl-C in the training window still stops cleanly and saves.
 
 ---
 
@@ -670,40 +828,6 @@ standard normal-approximation interval.
 
 ---
 
-## Running the control center
-
-```bash
-python3 server.py
-```
-
-Then open **<http://127.0.0.1:8000>**.
-
-```bash
-python3 server.py --open            # start it and open a browser
-python3 server.py --port 8080       # if 8000 is taken
-python3 server.py --quiet           # one line instead of the banner
-```
-
-Stop it with Ctrl-C. Shutdown is graceful: the server stops accepting work,
-asks any running job to stop the same way Ctrl-C would, waits for training to
-finish its game and write a checkpoint, and only then exits. A training run is
-never lost because the web server went away.
-
-It **binds to 127.0.0.1** — your own machine and nothing else. There is no
-authentication, which is exactly why that default matters; see
-[Security and networking](#security-and-networking).
-
-The control center never interferes with training. Slow work runs in separate
-processes, and the live game viewer opens the weights *read-only*, so nothing
-you do in the browser can corrupt a run in progress.
-
-### Keyboard shortcuts
-
-`g` then `o`/`t`/`p`/`e`/`c`/`k`/`l`/`s` jumps between pages, arrow keys or
-WASD play a human game, `Space` pauses a watched game, and `?` lists them all.
-
----
-
 ## Watching the AI play
 
 **Play ▸ Watch the AI** in the control center. Pick an agent, press **Start
@@ -808,7 +932,7 @@ Results land in `data/experiments/<name>.json`.
 ## Running tests
 
 ```bash
-python3 -m unittest discover -s tests            # everything (~70 s)
+python3 -m unittest discover -s tests            # everything (~90 s)
 python3 -m unittest discover -s tests -v         # verbose
 python3 -m unittest tests.test_engine            # one module
 python3 tests/benchmark_engine.py                # throughput benchmark
@@ -816,7 +940,7 @@ python3 tests/benchmark_engine.py                # throughput benchmark
 
 On Windows use `py -m unittest discover -s tests`.
 
-**243 tests.** What they actually check:
+**251 tests.** What they actually check:
 
 - **`test_engine.py`** — merge rules including the awkward cases (`2 2 2 2` →
   `4 4 . .`, `4 4 8 8` → `8 16 . .`), that a freshly merged tile cannot merge
@@ -863,6 +987,12 @@ On Windows use `py -m unittest discover -s tests`.
   watch the agent play, play a human game, read the statistics, list
   checkpoints, benchmark, **restart the server and confirm everything is still
   there**, then delete a checkpoint and shut down cleanly.
+- **`test_startup.py`** — the ways people really start and stop it: starting a
+  second copy points at the first instead of failing, `--stop` and
+  `--restart`, a port held by another program is left alone, **SIGTERM and
+  SIGHUP (closing the terminal) still save training and leave no trainer
+  behind**, and a trainer the server did not start can be stopped from the
+  browser but is never joined by a second one.
 
 ---
 
@@ -1072,56 +1202,6 @@ Known differences that are documented rather than papered over:
 
 ---
 
-## Troubleshooting
-
-**`python3: command not found` (Windows).**
-Use `py` or `python`. `python3` is a Unix convention. If none of them work,
-Python is not on PATH — reinstall it with “Add python.exe to PATH” ticked.
-
-**`python` opens the Microsoft Store.**
-That is Windows' placeholder for a missing Python. Install the real one from
-<https://www.python.org/downloads/windows/> and use `py`.
-
-**`SyntaxError` on start-up.**
-You are on Python 3.9 or older. Check with `python3 --version`; 3.10 is the
-minimum.
-
-**`no trained weights at ... (run 'default' has not been trained yet)`.**
-Nothing has been trained yet, or you are pointing at the wrong run. Train
-something first (`python3 train.py --games 1000`) or pass `--run NAME`.
-
-**The dashboard says “no training process running” while training is running.**
-The dashboard decides from a heartbeat file and the trainer's PID. Check they
-are looking at the same run — the run selector is in the top right, and the URL
-carries `?run=NAME`.
-
-**`Address already in use` / the dashboard will not start.**
-Something else has port 8000. Use `python3 server.py --port 8080`.
-
-**Training is slower than the numbers above.**
-That is expected as the agent improves: better play means much longer games.
-Watch moves/sec instead of games/sec. If moves/sec is also low, check nothing
-else is using the CPU, and try `--workers N` up to your core count.
-
-**Training seems stuck at a low score.**
-Give it games. A few thousand games is early; the 2048 rate typically crosses
-50% somewhere around 10,000–15,000 games with the default settings.
-
-**I want to start over.**
-Delete the run's two directories: `checkpoints/<run>/` and `data/<run>/`. Or
-just train under a new `--run` name.
-
-**Disk filled up.**
-`data/tables/` holds rebuildable index caches (22–34 MB each) and
-`checkpoints/*/snapshots/` holds frozen weight copies (268 MB each with the
-default network). Both are safe to delete; the tables rebuild themselves.
-
-**Something else.**
-Run `python3 train.py --check` and include its output — it reports the version,
-Python, platform and worker start method — when opening an issue.
-
----
-
 ## Project structure
 
 ```
@@ -1129,7 +1209,9 @@ Python, platform and worker start method — when opening an issue.
 ├── train.py                   train an agent            (--help for options)
 ├── evaluate.py                evaluate and compare agents
 ├── experiment.py              run controlled experiments
-├── server.py                  launch the dashboard
+├── server.py                  launch the dashboard (--stop, --restart)
+├── start.sh                   one-command start: finds Python, runs server.py
+├── stop.sh                    stop the dashboard gracefully from any terminal
 ├── version.py                 version string, reported by --version
 │
 ├── engine/
@@ -1171,7 +1253,7 @@ Python, platform and worker start method — when opening an issue.
 │   ├── default.json           the default configuration
 │   └── experiments/           18 experiment configs
 │
-├── tests/                     243 tests + the engine benchmark
+├── tests/                     251 tests + the engine benchmark
 ├── docs/
 │   ├── ARCHITECTURE.md        how the pieces fit together, and why
 │   ├── COMMANDS.md            command reference, with Windows equivalents
@@ -1192,8 +1274,8 @@ loads no CDN scripts, fonts or stylesheets.
 The one thing that listens is the control center, and it binds to
 **127.0.0.1** — your own machine only — unless you explicitly pass `--host`.
 
-That default matters more than it used to. This server can **start processes
-and delete files**, so its endpoints are privileged local controls rather than
+That default matters more than it used to. This server can **start processes,
+delete files and shut itself down**, so its endpoints are privileged local controls rather than
 a read-only dashboard. It has no authentication, and three things enforce the
 boundary instead:
 
@@ -1226,6 +1308,159 @@ ssh -L 8000:127.0.0.1:8000 you@the-machine
 The repository contains no credentials, keys or tokens, and `.gitignore`
 carries patterns for the usual secret filenames so one cannot be committed by
 accident.
+
+---
+
+## Git workflow
+
+The repository has one long-lived branch, **`main`**, on GitHub at
+`origin`. Everything below is run from inside the project folder.
+
+### The everyday commands
+
+```bash
+git status
+```
+
+Shows which files have changed, which of those are staged (queued for the next
+commit), which are new and untracked, and which branch you are on. Run it
+before and after everything else; it is always safe.
+
+```bash
+git pull
+```
+
+Downloads the latest commits from GitHub and merges them into your current
+branch, so you are working on the newest version. Do this before you start
+changing things, and again before you push.
+
+```bash
+git diff
+```
+
+Shows exactly what you have changed, line by line, that is **not staged yet**.
+`git diff --staged` shows what **is** staged, i.e. what the next commit will
+contain. Press `q` to leave the viewer.
+
+```bash
+git add .
+```
+
+Stages every changed and new file in the project folder for the next commit.
+It is safe here because `.gitignore` already excludes checkpoints, training
+data, caches, logs and editor files — but check `git status` first. To stage
+only some files, name them: `git add README.md start.sh`.
+
+```bash
+git commit -m "Describe the change"
+```
+
+Records the staged changes as one snapshot in your local history, with a
+message saying what changed and why. Nothing leaves your computer yet.
+
+```bash
+git push
+```
+
+Uploads your new commits to GitHub so they are backed up and visible there.
+The first time you push a new branch, use `git push -u origin <branch>`; after
+that, plain `git push` is enough.
+
+```bash
+git log --oneline
+```
+
+Lists the commits on the current branch, newest first, one line each: a short
+id and the message. Add `-10` to see only the last ten. Press `q` to leave.
+
+```bash
+git restore <file>
+```
+
+Throws away your uncommitted changes to that file and puts back the last
+committed version. **This cannot be undone**, so look at `git diff <file>`
+first. (`git restore --staged <file>` is harmless: it only un-stages the file
+and keeps your edits.)
+
+### The normal workflow when you change something
+
+```bash
+git status                            # 1. start from a known state
+git pull                              # 2. get the latest version first
+#    ... edit files ...
+./start.sh --restart                  # 3. run it and check your change works
+python3 -m unittest discover -s tests # 4. make sure nothing else broke
+git status                            # 5. see what changed
+git diff                              # 6. read your own changes
+git add .                             # 7. stage them
+git commit -m "Describe the change"   # 8. record them
+git push                              # 9. upload them
+```
+
+Why each step:
+
+1. **`git status`** — confirms you are on the branch you think you are, and
+   that there is nothing half-finished from last time mixed in.
+2. **`git pull`** — starting from the newest code avoids conflicts later.
+3. **`./start.sh --restart`** — the running server keeps the code it started
+   with, so restart it to test what you actually changed.
+4. **Tests** — about 90 seconds, and they cover the things that are easy to
+   break by accident (see [Running tests](#running-tests)).
+5. **`git status`** — the list of files that will go into the commit. If
+   `checkpoints/`, `data/`, a `.f32` file or anything large appears, stop:
+   it should be ignored, not committed.
+6. **`git diff`** — catches debugging leftovers and accidental edits before
+   they become permanent.
+7. **`git add .`** — chooses what goes into the commit.
+8. **`git commit`** — one commit per logical change, with a message that says
+   what and why ("Fix restart leaving training running", not "updates").
+9. **`git push`** — publishes the commit. If it is rejected because GitHub has
+   newer commits, run `git pull`, then `git push` again.
+
+After **any** `git pull` that brings in Python changes, restart the control
+center (`./start.sh --restart`) so it runs the new code.
+
+### Working on a branch
+
+For anything bigger than a small fix, a branch keeps `main` working while you
+experiment:
+
+```bash
+git switch main && git pull           # start from the latest main
+git switch -c my-change               # create a branch and move onto it
+#    ... edit, test, add, commit as above, as often as you like ...
+git push -u origin my-change          # upload the branch (first time)
+```
+
+Then open a **pull request** from `my-change` into `main` on GitHub, check the
+diff and the CI tests there, and merge it. Afterwards:
+
+```bash
+git switch main                       # back to main
+git pull                              # bring in the merged change
+git branch -d my-change               # delete the finished local branch
+```
+
+`git branch` lists your branches, with `*` next to the current one.
+
+### What never goes into Git
+
+`.gitignore` keeps these out, and it is worth knowing why:
+
+- **`checkpoints/`** — trained weights. The default network is 268 MB, and
+  GitHub rejects any file over 100 MB. To share a trained agent, attach the
+  `.f32` file to a GitHub **Release** instead.
+- **`data/`** — training history, evaluations, job logs and rebuildable
+  lookup tables: specific to your machine and regenerated as you use it.
+- **`__pycache__/`, `.venv/`, test caches, `*.log`, `nohup.out`** — generated
+  files.
+- **`.vscode/`, `.idea/`, `.DS_Store`, `Thumbs.db`** — editor and
+  operating-system clutter.
+- **`.env`, keys and anything named like a credential** — the project needs no
+  secrets, so none should ever be committed by accident.
+
+If a file that should be ignored was committed earlier, `git rm --cached
+<file>` stops tracking it without deleting your copy; commit that change.
 
 ---
 

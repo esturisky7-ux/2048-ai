@@ -53,6 +53,7 @@ htmlcov/
 
 # --- logs, PIDs and other runtime scratch ----------------------------------
 *.log
+nohup.out
 *.pid
 *.tmp
 *.bak
