@@ -419,6 +419,15 @@ def start_training(data: dict) -> dict:
         raise ApiError(
             f"{busy.type} job {busy.id} is already working on "
             f"'run:{run_name}'. Stop it first.", status=409)
+    # The job manager only knows its own jobs. A trainer started from a
+    # terminal, or left behind by a server that was killed, is just as live,
+    # and a second one would interleave updates into the same weight file.
+    external = _training_view(run_name)
+    if external["external"]:
+        raise ApiError(
+            f"run '{run_name}' is already being trained by another process "
+            f"(pid {external['status'].get('pid')}). Stop that first — the "
+            f"Stop button works on it too.", status=409)
 
     if resume and not exists:
         raise ApiError(f"run '{run_name}' has no checkpoint to resume")
@@ -485,10 +494,49 @@ def stop_training(data: dict) -> dict:
     else:
         job = MANAGER.current_training()
         if job is None:
+            if "run" in data:
+                return _stop_external_training(_run_name(data))
             raise ApiError("no training job is running", status=409)
     if not MANAGER.stop(job.id):
         raise ApiError("that job is not running", status=409)
     return {"ok": True, "job": job.to_dict(), "message":
+            "stopping after the current game; the checkpoint will be saved"}
+
+
+def _stop_external_training(run_name: str) -> dict:
+    """Stop a trainer this server did not launch, the way Ctrl-C would.
+
+    That is a ``train.py`` started from a terminal, or one left running by a
+    control center that was killed. Its PID comes from the run's own status
+    heartbeat, and is only signalled while that heartbeat is fresh and the
+    process is alive -- the same test that reports it as training at all.
+    """
+    tv = _training_view(run_name)
+    if not tv["external"]:
+        raise ApiError("no training job is running", status=409)
+    pid = tv["status"].get("pid")
+    # An experiment job trains its run itself; stop it as the job it is, so
+    # it is recorded as cancelled rather than failed.
+    for job in MANAGER.active():
+        if job.pid == pid and MANAGER.stop(job.id):
+            return {"ok": True, "job": job.to_dict(), "message":
+                    "stopping after the current game; the checkpoint will "
+                    "be saved"}
+    if os.name == "nt":
+        # There is no way to deliver Ctrl-C to another console's process.
+        raise ApiError(
+            f"run '{run_name}' is being trained by process {pid}, which this "
+            f"control center did not start. Press Ctrl-C in its window.",
+            status=409)
+    import signal
+    try:
+        os.kill(pid, signal.SIGINT)
+    except ProcessLookupError:
+        raise ApiError("that training process has already exited", status=409)
+    except PermissionError:
+        raise ApiError(f"not allowed to stop process {pid}", status=403)
+    LOG.add("info", f"asked training process {pid} to stop", run=run_name)
+    return {"ok": True, "job": None, "pid": pid, "message":
             "stopping after the current game; the checkpoint will be saved"}
 
 

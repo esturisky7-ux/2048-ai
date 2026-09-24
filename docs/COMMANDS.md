@@ -234,19 +234,35 @@ resolved config that produced it.
 happens in the browser.
 
 ```bash
+./start.sh                            # start it and open http://127.0.0.1:8000
+./stop.sh                             # stop it (from any terminal)
+./start.sh --restart                  # stop the running one, start again
+```
+
+`start.sh` finds a Python 3.10+ and runs `server.py --open`; any `server.py`
+option can be added to it. The same commands without the wrapper:
+
+```bash
 python3 server.py                     # http://127.0.0.1:8000
 python3 server.py --open              # and open a browser
 python3 server.py --port 8080         # if 8000 is taken
 python3 server.py --quiet             # one line instead of the banner
+python3 server.py --stop              # stop the running one
+python3 server.py --restart           # stop the running one, start again
 ```
 
 ```powershell
 py server.py --open
+py server.py --stop
 ```
 
-Stop it with Ctrl-C. Shutdown is graceful: running jobs are asked to stop the
-way Ctrl-C asks them to, and the server waits for training to write its
-checkpoint before exiting.
+Starting it while it is already running does not fail: it prints the address
+of the running one and exits.
+
+Stop it with Ctrl-C, `--stop` / `./stop.sh`, or by closing its terminal
+window; `kill` and an editor's stop button work too. Every one of these is
+graceful: running jobs are asked to stop the way Ctrl-C asks them to, and the
+server waits for training to write its checkpoint before exiting.
 
 From the browser you can train, stop, resume, evaluate, compare agents, run
 experiments, manage checkpoints, watch the AI play, play yourself, benchmark
@@ -327,6 +343,7 @@ curl -s -X POST http://127.0.0.1:8000/api/training/stop \
 | `GET /api/game/{id}?since=` · `POST /api/game/{id}/move` · `/control` | Play it |
 | `GET /api/system` · `GET /api/logs` | Diagnostics |
 | `GET /api/settings` · `POST /api/settings` | UI preferences |
+| `POST /api/shutdown` | Stop the server gracefully (what `--stop` uses) |
 
 ### Environment variables
 
@@ -345,7 +362,7 @@ AI2048_HOME=/data/2048 python3 server.py
 ## Tests and benchmarks
 
 ```bash
-python3 -m unittest discover -s tests             # all 243 tests (~2 min)
+python3 -m unittest discover -s tests             # all 251 tests (~2 min)
 python3 -m unittest discover -s tests -v          # verbose
 python3 -m unittest discover -s tests -q          # quiet
 python3 -m unittest tests.test_engine             # one module
@@ -430,8 +447,10 @@ One command, then the browser — this is the recommended path:
 ```bash
 git clone https://github.com/esturisky7-ux/2048-ai.git
 cd 2048-ai
-python3 server.py --open
+./start.sh
 ```
+
+(`py server.py --open` on Windows.)
 
 The command-line equivalent, for scripting and headless machines:
 

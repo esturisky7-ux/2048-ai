@@ -45,7 +45,7 @@ App.views.training = {
     this.live.innerHTML = "";
     const stop = el("button", { class: "btn btn-danger" },
       t.state === "STOPPING" ? "Stopping…" : "Stop gracefully");
-    stop.disabled = t.state === "STOPPING" || t.external;
+    stop.disabled = t.state === "STOPPING";
     stop.onclick = () => this.stop();
 
     add(this.live,
@@ -71,7 +71,7 @@ App.views.training = {
           `${F.pct(frac * 100, 1)} of this session's target`)) : null,
       el("div", { class: "btn-row", style: "margin-top:16px" }, stop,
         t.external ? el("span", { class: "faint", style: "font-size:12px" },
-          "this run was started from the command line; stop it there") : null),
+          "started outside this control center (a terminal, or an earlier server)") : null),
       el("div", { class: "faint", style: "margin-top:12px;font-size:12px" },
         `Next checkpoint in ${F.n(sch.games_to_checkpoint ?? 0)} games`,
         sch.eval_every ? ` · next evaluation in ${F.n(sch.games_to_eval ?? 0)} games` : "",
@@ -83,7 +83,7 @@ App.views.training = {
 
   async stop() {
     try {
-      const r = await API.post("/api/training/stop", {});
+      const r = await API.post("/api/training/stop", { run: App.run });
       Toast.show("Stopping training", r.message, "warn");
       App.refreshNow();
     } catch (e) { Toast.error("Could not stop", e.message); }

@@ -545,7 +545,20 @@ non-zero *because* it was interrupted is recorded as `CANCELLED`, not
 weight file would interleave their updates and corrupt the run's accounting.
 Each job declares an *exclusive key* — for training, the run name — and a
 second job with a live key is rejected with a 409 that names the job already
-holding it.
+holding it. A trainer the server did not launch (one started with `train.py`
+in a terminal, or left running by a server that was killed outright) is
+detected from the run's status heartbeat and refused the same way; the Stop
+button sends it SIGINT, which is exactly Ctrl-C.
+
+**Stopping the server stops its jobs, however it is stopped.** Children run
+in their own process group or session so that stopping one job cannot
+interrupt the server, which also means the terminal's signals do not reach
+them. So the server treats SIGTERM (`kill`, an editor's stop button, logging
+out) and SIGHUP (closing the terminal window) exactly like Ctrl-C: it asks
+every job to save and waits for them before exiting. `server.py --stop` and
+`--restart` reach the same shutdown through `POST /api/shutdown`, which
+carries the same `X-2048-Request` and loopback-origin checks as every other
+mutating route.
 
 **Why training uses `train.py` and everything else uses a runner.** Training
 goes through the real command-line entry point, so the browser and the

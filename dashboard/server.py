@@ -51,6 +51,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 # to set from a cross-origin form or image tag.
 REQUEST_HEADER = "X-2048-Request"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+# POST here (with the header above) to stop the server gracefully; this is
+# what ``server.py --stop`` and ``--restart`` use.
+SHUTDOWN_PATH = "/api/shutdown"
 
 # Server-Sent Events: how often a stream pushes a status frame, and how many
 # streams may be open at once (one per browser tab is the normal case).
@@ -154,6 +157,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(
                     403, "this endpoint only accepts same-origin requests "
                          f"carrying the {REQUEST_HEADER} header")
+            if path == SHUTDOWN_PATH:
+                return self._shutdown_requested()
             length = int(self.headers.get("Content-Length") or 0)
             if length > 1_000_000:
                 return self._error(413, "request body too large")
@@ -172,6 +177,18 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             LOG.add("error", f"POST {path} failed: {type(e).__name__}: {e}")
             return self._error(500, f"{type(e).__name__}: {e}")
+
+    def _shutdown_requested(self):
+        """``server.py --stop``: shut down exactly as Ctrl-C would.
+
+        The reply goes out first; ``serve_forever`` then returns in the main
+        thread, whose ``finally`` runs the usual graceful :func:`shutdown`.
+        """
+        self._json({"ok": True, "pid": os.getpid(), "message":
+                    "shutting down; running jobs save before they exit"})
+        LOG.add("info", "shutdown requested over HTTP")
+        threading.Thread(target=self.server.shutdown, daemon=True,
+                         name="shutdown-request").start()
 
     # -- server-sent events ------------------------------------------------
     def _stream(self, query: dict):
@@ -247,8 +264,43 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, body, ctype)
 
 
+# Signals that must stop the server as cleanly as Ctrl-C does: closing the
+# terminal window (SIGHUP), ``kill``, an editor's stop button or logging out
+# (SIGTERM), and Ctrl-Break on Windows (SIGBREAK). Their default action ends
+# the process on the spot and skips shutdown(), and a training job -- which
+# runs in its own session so it can be stopped on its own -- would then carry
+# on training with no server left to stop it.
+_STOP_SIGNALS = ("SIGTERM", "SIGHUP", "SIGBREAK")
+
+
+def _ignore_signal(signum, frame):
+    pass
+
+
 def _raise_keyboard_interrupt(signum, frame):
+    # Only the first one counts: a second hang-up must not cut short the wait
+    # for training to save. (A Python-level no-op rather than SIG_IGN, which
+    # would be inherited by any child started afterwards.)
+    for name in _STOP_SIGNALS:
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _ignore_signal)
+            except (ValueError, OSError):
+                pass
     raise KeyboardInterrupt
+
+
+def _say(text: str = "", err: bool = False) -> None:
+    """``print`` that survives a terminal which has gone away.
+
+    Once the window is closed, writing to it raises; shutdown has to carry on
+    regardless, because that is exactly when training is saving.
+    """
+    try:
+        print(text, file=sys.stderr if err else sys.stdout, flush=True)
+    except (OSError, ValueError):
+        pass
 
 
 def _banner(host: str, port: int) -> None:
@@ -299,6 +351,11 @@ def serve(host: str = "127.0.0.1", port: int = 8000,
               f"             ssh -L {port}:127.0.0.1:{port} you@this-machine",
               file=sys.stderr)
 
+    # Bind first, so a port that is already taken fails before anything is
+    # started or logged -- not after an "started" entry in the event log.
+    httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd.daemon_threads = True
+
     # Give training the CPU; the dashboard is never the important workload.
     try:
         os.nice(10)
@@ -311,17 +368,14 @@ def serve(host: str = "127.0.0.1", port: int = 8000,
     MANAGER.on_event = lambda level, message, **f: LOG.add(level, message, **f)
     MANAGER.start_reaper()
 
-    # Windows delivers Ctrl-Break as SIGBREAK, whose default action kills the
-    # process outright; route it to the same clean shutdown as Ctrl-C.
-    sigbreak = getattr(signal, "SIGBREAK", None)
-    if sigbreak is not None:
-        try:
-            signal.signal(sigbreak, _raise_keyboard_interrupt)
-        except (ValueError, OSError):
-            pass
+    for name in _STOP_SIGNALS:
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, _raise_keyboard_interrupt)
+            except (ValueError, OSError):
+                pass      # not the main thread (tests), or not allowed here
 
-    httpd = ThreadingHTTPServer((host, port), Handler)
-    httpd.daemon_threads = True
     url = f"http://{host}:{port}/"
     if banner:
         _banner(host, port)
@@ -331,8 +385,9 @@ def serve(host: str = "127.0.0.1", port: int = 8000,
         threading.Timer(0.8, lambda: __import__("webbrowser").open(url)).start()
     try:
         httpd.serve_forever()
+        _say("\n  shutting down (asked to by --stop or --restart)...")
     except KeyboardInterrupt:
-        print("\n  shutting down...")
+        _say("\n  shutting down...")
     finally:
         shutdown(httpd)
 
@@ -347,9 +402,9 @@ def shutdown(httpd=None) -> None:
     _shutdown.set()
     live = MANAGER.active()
     if live:
-        print(f"  waiting for {len(live)} job(s) to save and exit...")
+        _say(f"  waiting for {len(live)} job(s) to save and exit...")
         for job in live:
-            print(f"    {job.type}: {job.label}")
+            _say(f"    {job.type}: {job.label}")
     MANAGER.stop_all()
     MANAGER.shutdown()
     SESSIONS.stop_all()
@@ -360,4 +415,119 @@ def shutdown(httpd=None) -> None:
         except Exception:
             pass
         httpd.server_close()
-    print("  done. training data is saved.")
+    _say("  done. training data is saved.")
+
+
+# ---------------------------------------------------------------------------
+# A control center that is already running: the start-up check, --stop and
+# --restart. http.client is used directly, never urllib, so an HTTP proxy set
+# in the environment is not consulted for what is always a loopback address.
+# ---------------------------------------------------------------------------
+def _client_host(host: str) -> str:
+    """Where to connect to reach a server that was bound to ``host``."""
+    if host in ("", "0.0.0.0"):
+        return "127.0.0.1"
+    if host in ("::", "[::]"):
+        return "::1"
+    return host.strip("[]")
+
+
+# A listener on this machine completes a connection at once, so a connection
+# that fails *for any reason* within this long means nobody is listening.
+# (Windows takes up to ~2 s to report a refused loopback connection, and a
+# timeout must not be mistaken for "something is there".)
+_CONNECT_TIMEOUT = 1.0
+
+
+def probe(host: str, port: int, timeout: float = 5.0) -> str | None:
+    """What is listening on ``host:port``?
+
+    ``"control-center"`` if it is one of these servers, ``"other"`` if it is
+    some other program, and ``None`` if nothing is listening at all.
+    """
+    import http.client
+    conn = http.client.HTTPConnection(_client_host(host), port,
+                                      timeout=_CONNECT_TIMEOUT)
+    try:
+        try:
+            conn.connect()
+        except OSError:
+            return None
+        conn.sock.settimeout(timeout)
+        conn.request("HEAD", "/")
+        resp = conn.getresponse()
+        server = resp.getheader("Server") or ""
+    except (OSError, http.client.HTTPException):
+        return "other"       # it accepted the connection but did not answer
+    finally:
+        conn.close()
+    return "control-center" if server.startswith("2048ai/") else "other"
+
+
+def _port_closed(host: str, port: int) -> bool:
+    import socket
+    try:
+        with socket.create_connection((_client_host(host), port),
+                                      timeout=_CONNECT_TIMEOUT):
+            return False
+    except OSError:
+        return True
+
+
+def stop_running(host: str, port: int, wait: float | None = None) -> bool:
+    """Ask the control center on ``host:port`` to shut down, and wait for it.
+
+    It shuts down exactly as it does on Ctrl-C, so running training finishes
+    its game and writes a checkpoint first. Returns True once nothing listens
+    on the port any more (including when nothing was running), False if the
+    port belongs to some other program or the server did not stop in time.
+    """
+    import http.client
+    from .jobs import GRACE_SECONDS, TERMINATE_SECONDS
+    if wait is None:
+        wait = GRACE_SECONDS + TERMINATE_SECONDS + 20
+
+    state = probe(host, port)
+    if state is None:
+        _say(f"  no control center is running on port {port}.")
+        return True
+    if state == "other":
+        _say(f"  port {port} is used by another program, not the 2048 AI "
+             f"control center; leaving it alone.", err=True)
+        return False
+
+    conn = http.client.HTTPConnection(_client_host(host), port, timeout=10)
+    try:
+        conn.request("POST", SHUTDOWN_PATH, body=b"{}",
+                     headers={REQUEST_HEADER: "1",
+                              "Content-Type": "application/json"})
+        resp = conn.getresponse()
+        resp.read()
+        status = resp.status
+    except (OSError, http.client.HTTPException) as e:
+        _say(f"  could not ask the control center to stop: {e}", err=True)
+        return False
+    finally:
+        conn.close()
+    if status != 200:
+        # A copy started before --stop existed has no shutdown route.
+        _say(f"  the control center on port {port} did not accept the stop "
+             f"request (HTTP {status}).\n"
+             f"  Press Ctrl+C in the terminal it is running in instead.",
+             err=True)
+        return False
+
+    _say(f"  stopping the control center on port {port}; "
+         f"running jobs save first...")
+    started = time.time()
+    next_note = started + 10
+    while time.time() - started < wait:
+        if _port_closed(host, port):
+            _say("  stopped.")
+            return True
+        if time.time() >= next_note:
+            _say("  still waiting for running jobs to save...")
+            next_note += 10
+        time.sleep(0.25)
+    _say(f"  it is still running after {wait:.0f} seconds.", err=True)
+    return False

@@ -105,11 +105,11 @@ App.views.overview = {
     const buttons = el("div", { class: "btn-row" });
     if (t.running) {
       const stop = el("button", { class: "btn btn-danger" }, "Stop training");
-      stop.disabled = t.state === "STOPPING" || t.external;
+      stop.disabled = t.state === "STOPPING";
       stop.onclick = async () => {
         stop.disabled = true;
         try {
-          const r = await API.post("/api/training/stop", {});
+          const r = await API.post("/api/training/stop", { run: App.run });
           Toast.show("Stopping training", r.message, "warn");
           App.refreshNow();
         } catch (e) { Toast.error("Could not stop", e.message); stop.disabled = false; }
@@ -117,7 +117,7 @@ App.views.overview = {
       buttons.append(stop);
       if (t.external) {
         buttons.append(el("span", { class: "faint", style: "font-size:12px" },
-          "started from the command line — stop it there, or with Ctrl-C"));
+          "started outside this control center — stopping it still saves a checkpoint"));
       }
     } else {
       const resume = el("button", { class: "btn btn-primary" },
