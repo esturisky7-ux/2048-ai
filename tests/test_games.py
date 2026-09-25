@@ -231,6 +231,8 @@ class TestCollection(unittest.TestCase):
         self.mgr.stop_all()
         s, agent = self.add()                # before the old collector exits
         self.assertTrue(wait_for(lambda: s.id not in self.mgr.sessions, 5))
+        # A running session closes its agent as its thread ends.
+        self.assertTrue(wait_for(lambda: not s.is_alive(), 5))
         self.assertEqual(agent.closed, 1)
 
 

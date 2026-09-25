@@ -184,6 +184,9 @@ class HomeTest(unittest.TestCase):
         holder.stdin.close()
         holder.wait(timeout=30)
         holder.stdout.close()
+        # Reaped: tearDown's communicate() would read the closed pipe, which
+        # on Windows fails in a reader thread.
+        self.procs.remove(holder)
 
     def stop(self, proc, timeout=120):
         interrupt(proc)
@@ -388,6 +391,8 @@ class TestRunOwnershipAcrossProcesses(HomeTest):
     def test_deleting_a_run_trained_elsewhere_is_refused(self):
         run = "own-del"
         trainer = self.start_trainer(run)
+        wait_for(CP.Run(run).meta_path.exists, 60,
+                 what=f"{run}'s first checkpoint")
         with self.assertRaises(api.ApiError) as ctx:
             api.handle_post("/api/checkpoints/delete",
                             {"id": run, "confirm": True})
@@ -447,6 +452,10 @@ class TestRunOwnershipAcrossProcesses(HomeTest):
     def test_a_fresh_experiment_cannot_reset_a_run_being_trained(self):
         run = "own-exp"
         trainer = self.start_trainer(run)
+        # Holding the lock comes before the trainer's first file; wait for a
+        # checkpoint, so a reset would have something to destroy.
+        wait_for(CP.Run(run).meta_path.exists, 60,
+                 what=f"{run}'s first checkpoint")
         weights = CP.Run(run).weights_path
         inode = os.stat(weights).st_ino
         spec = os.path.join(self.home, "exp-own.json")
