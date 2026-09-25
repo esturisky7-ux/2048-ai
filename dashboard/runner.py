@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 from agents.registry import make_agent, AGENT_NAMES        # noqa: E402
 from evaluation.evaluator import evaluate, game_seed       # noqa: E402
 from training.checkpoint import Run                        # noqa: E402
+from training.runlock import hold_frozen                   # noqa: E402
 
 # Progress is written at most this often. Evaluation calls back after every
 # game, and rewriting a file thousands of times a second would cost more than
@@ -88,6 +89,14 @@ def _build_agent(spec: dict):
     return make_agent(name, seed=int(spec.get("agent_seed", 0)), **kw)
 
 
+def _live_run(spec: dict) -> str | None:
+    """The run whose current weights this agent spec plays, if any."""
+    if spec.get("agent", "learned") != "learned":
+        return None
+    from agents.learned import live_run_for
+    return live_run_for(spec.get("run", "default"), spec.get("checkpoint"))
+
+
 def _label_for(spec: dict) -> str:
     name = spec.get("agent", "learned")
     depth = int(spec.get("depth", 1 if name == "learned" else 2))
@@ -112,7 +121,12 @@ def run_evaluation(spec: dict, progress: ProgressWriter) -> dict:
         progress.set(done=done, total=total)
 
     try:
-        res = evaluate(agent, games=games, seed=seed, progress=on_progress)
+        # Current weights stay frozen for the whole evaluation, or it is
+        # refused because the run is being trained.
+        with hold_frozen([getattr(agent, "live_run", None)],
+                         purpose="evaluation, control center"):
+            res = evaluate(agent, games=games, seed=seed,
+                           progress=on_progress)
     finally:
         if hasattr(agent, "close"):
             agent.close()
@@ -142,32 +156,39 @@ def run_comparison(spec: dict, progress: ProgressWriter) -> dict:
     total_units = games * len(agents)
     done_units = 0
 
-    for index, sub in enumerate(agents):
-        label = _label_for(sub)
-        progress.set(force=True, phase="evaluating", agent=label,
-                     agent_index=index, agent_count=len(agents),
-                     done=done_units, total=total_units)
-        agent = _build_agent(sub)
-        base = done_units
+    # Every run whose current weights take part stays frozen for the whole
+    # comparison -- or the comparison is refused before any game is played,
+    # not after the first few agents have already been measured.
+    with hold_frozen([_live_run(sub) for sub in agents],
+                     purpose="comparison, control center"):
+        for index, sub in enumerate(agents):
+            label = _label_for(sub)
+            progress.set(force=True, phase="evaluating", agent=label,
+                         agent_index=index, agent_count=len(agents),
+                         done=done_units, total=total_units)
+            agent = _build_agent(sub)
+            base = done_units
 
-        def on_progress(done, _total, _base=base):
-            progress.set(done=_base + done, total=total_units)
+            def on_progress(done, _total, _base=base):
+                progress.set(done=_base + done, total=total_units)
 
-        t0 = time.perf_counter()
-        try:
-            res = evaluate(agent, games=games, seed=seed, progress=on_progress)
-        finally:
-            if hasattr(agent, "close"):
-                agent.close()
-        elapsed = time.perf_counter() - t0
-        res["label"] = label
-        res["agent_spec"] = sub
-        # Mean wall-clock time per decision, which is what makes a search agent
-        # feel slow. mean_moves is decisions per game.
-        moves = res.get("mean_moves", 0) * res.get("games", 0)
-        res["ms_per_decision"] = (elapsed / moves * 1000.0) if moves else 0.0
-        results[label] = res
-        done_units += games
+            t0 = time.perf_counter()
+            try:
+                res = evaluate(agent, games=games, seed=seed,
+                               progress=on_progress)
+            finally:
+                if hasattr(agent, "close"):
+                    agent.close()
+            elapsed = time.perf_counter() - t0
+            res["label"] = label
+            res["agent_spec"] = sub
+            # Mean wall-clock time per decision, which is what makes a search
+            # agent feel slow. mean_moves is decisions per game.
+            moves = res.get("mean_moves", 0) * res.get("games", 0)
+            res["ms_per_decision"] = (elapsed / moves * 1000.0) \
+                if moves else 0.0
+            results[label] = res
+            done_units += games
 
     progress.set(force=True, phase="done", done=total_units,
                  total=total_units)
@@ -355,9 +376,10 @@ def main(argv: list[str]) -> int:
         return 130
     except Exception as e:
         progress.set(force=True, phase="failed", error=str(e))
-        print(f"{type(e).__name__}: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
+        # Last, so it is the line the job list reports as the reason.
+        print(f"{type(e).__name__}: {e}", file=sys.stderr)
         return 1
     _write_result(result_path, result)
     return 0

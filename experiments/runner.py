@@ -35,6 +35,14 @@ def result_path(name: str) -> Path:
     return RESULTS_DIR / f"{name}.json"
 
 
+def experiment_run_name(name: str, spec: dict | None = None) -> str | None:
+    """The run a training experiment trains, or ``None`` for an agent one."""
+    spec = load_experiment(name) if spec is None else spec
+    if spec.get("kind", "train") != "train":
+        return None
+    return spec.get("run", f"exp-{name}")
+
+
 def load_experiment(name: str) -> dict:
     with open(resolve_path(name), encoding="utf-8") as f:
         return json.load(f)
@@ -93,24 +101,29 @@ def run_experiment(name: str, games: int | None = None,
 def _run_agent_experiment(spec: dict, eval_games, quiet) -> dict:
     from agents.registry import make_agent
     from evaluation.evaluator import evaluate
+    from training.runlock import hold_frozen
 
     a = dict(spec.get("agent") or {})
     agent_name = a.pop("name", "expectimax")
     n = eval_games or spec.get("eval_games", 200)
     seed = spec.get("eval_seed", 987654)
     agent = make_agent(agent_name, seed=spec.get("agent_seed", 0), **a)
-    if not quiet:
-        print(f"  evaluating {agent_name} over {n} games (seed {seed})...")
-    res = evaluate(agent, games=n, seed=seed)
-    if hasattr(agent, "close"):
-        agent.close()
+    try:
+        if not quiet:
+            print(f"  evaluating {agent_name} over {n} games (seed {seed})...")
+        with hold_frozen([getattr(agent, "live_run", None)],
+                         purpose="evaluation, experiment"):
+            res = evaluate(agent, games=n, seed=seed)
+    finally:
+        if hasattr(agent, "close"):
+            agent.close()
     return res
 
 
 def _run_train_experiment(name, spec, games, eval_games, workers,
                           fresh, quiet) -> dict:
     import shutil
-    from training.trainer import Trainer
+    from training.trainer import PolicyAgent, Trainer
     from evaluation.evaluator import evaluate
 
     cfg = load_config(overrides={k: v for k, v in spec.items()
@@ -118,43 +131,49 @@ def _run_train_experiment(name, spec, games, eval_games, workers,
                                               "games", "eval_games",
                                               "eval_seed", "agent",
                                               "agent_seed")})
-    run_name = spec.get("run", f"exp-{name}")
+    run_name = experiment_run_name(name, spec)
     cfg["run"] = run_name
     n_games = games or spec.get("games", 5000)
     n_eval = eval_games or spec.get("eval_games", 200)
 
     run = Run(run_name)
-    if fresh and run.exists():
-        shutil.rmtree(run.dir, ignore_errors=True)
-        shutil.rmtree(run.data_dir, ignore_errors=True)
+    # Own the run before looking at it: a --fresh reset must never delete a
+    # run another process is training, and nothing may start training it
+    # between the reset and this experiment's own trainer taking over.
+    lock = run.lock(purpose=f"experiment {name}").acquire()
+    try:
+        if fresh and run.exists():
+            shutil.rmtree(run.dir, ignore_errors=True)
+            shutil.rmtree(run.data_dir, ignore_errors=True)
 
-    resume = run.exists()
-    trainer = Trainer(run_name, cfg if not resume else None,
-                      resume=resume, quiet=quiet)
-    trainer.eval_every = 0          # the experiment evaluates once, at the end
-    trainer.train(n_games=n_games, workers=workers)
-
-    class _Frozen:
-        name = "learned"
-        def __init__(self, learner, g):
-            self._l, self._g = learner, g
-        def act(self, b):
-            return self._l.best_action(b)
-        def new_game(self):
-            pass
-        def describe(self):
-            return {"name": "learned", "games_trained": self._g}
-
-    if not quiet:
-        print(f"  evaluating over {n_eval} fixed games...")
-    res = evaluate(_Frozen(trainer.learner, trainer.game_index),
-                   games=n_eval, seed=cfg["evaluation"]["seed"])
+        resume = run.exists()
+        trainer = Trainer(run_name, cfg if not resume else None,
+                          resume=resume, quiet=quiet, lock=lock)
+        try:
+            trainer.eval_every = 0      # the experiment evaluates once, at the end
+            trainer.train(n_games=n_games, workers=workers)
+            if trainer.stop_requested:
+                # Stopped part-way: a result for fewer games than the
+                # experiment specifies would be misleading, so there is none.
+                raise KeyboardInterrupt(
+                    f"experiment {name} was stopped at game "
+                    f"{trainer.game_index:,}; no result was written")
+            if not quiet:
+                print(f"  evaluating over {n_eval} fixed games...")
+            res = evaluate(PolicyAgent(trainer.learner.policy(),
+                                       trainer.game_index),
+                           games=n_eval, seed=cfg["evaluation"]["seed"])
+            games_trained = trainer.game_index
+        finally:
+            trainer.close()
+    finally:
+        lock.release()
     meta = run.load_meta() or {}
     return {
         "experiment": name, "kind": "train",
         "description": spec.get("description", ""),
         "run": run_name,
-        "games_trained": trainer.game_index,
+        "games_trained": games_trained,
         "config": cfg,
         "training": meta.get("all_time", {}),
         "evaluation": res,

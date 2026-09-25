@@ -20,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from experiments.runner import (run_experiment, list_experiments,      # noqa: E402
                                 load_results, comparison_table, result_path)
 from training.checkpoint import python_command, display_path           # noqa: E402
+from training.runlock import RunBusy                                   # noqa: E402
+from training.trainer import TrainingError                             # noqa: E402
 from version import version_string                                     # noqa: E402
 
 
@@ -67,9 +69,12 @@ def main() -> int:
         try:
             res = run_experiment(name, games=a.games, eval_games=a.eval_games,
                                  workers=a.workers, fresh=a.fresh, quiet=a.quiet)
-        except FileNotFoundError as e:
+        except (FileNotFoundError, RunBusy, TrainingError) as e:
             print(f"  error: {e}", file=sys.stderr)
             return 1
+        except KeyboardInterrupt as e:
+            print(f"  interrupted{f': {e}' if str(e) else ''}", file=sys.stderr)
+            return 130
         ev = res.get("evaluation", {})
         if ev.get("games"):
             print(f"  -> mean {ev['mean_score']:,.0f} "

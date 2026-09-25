@@ -345,6 +345,14 @@ checkpoint). Resuming the same run is refused until it has stopped, because two
 trainers writing one weight file would corrupt it. On Windows, stop it with
 Ctrl+C in its own window.
 
+**"run 'NAME' is already in use by process 1234".**
+Every trainer — from a terminal, the control center or an experiment — holds
+its run's lock (in `checkpoints/.locks/`) for as long as it runs, so a second
+trainer, a deletion or an experiment's `--fresh` reset of that run is refused.
+Stop the process named in the message, or use another run name. The lock goes
+away the moment its process exits, even if it crashed, so there is never a
+stale lock to remove.
+
 **Training keeps running after I closed the terminal.**
 Fixed: closing the window, `kill`, an editor's stop button and logging out now
 all stop training cleanly, the same as Ctrl+C. If you have a trainer left over
@@ -484,7 +492,7 @@ WASD play a human game, `Space` pauses a watched game, and `?` lists them all.
 | **Supervised jobs** | Training and evaluation run as subprocesses with real state, progress and a graceful stop. |
 | **Play it yourself** | Human play and You-vs-AI, on the same Python engine the AI uses. |
 | **Localhost-only** | Binds to 127.0.0.1, refuses cross-origin requests, never takes a filesystem path from the browser. |
-| **Tested** | 251 tests, run on Linux, Windows and macOS by CI. |
+| **Tested** | 337 tests, run on Linux, Windows and macOS by CI. |
 
 ---
 
@@ -669,7 +677,9 @@ It scores **3.7× more than depth-2 expectimax while running 3.9× faster**,
 because a search that must examine thousands of positions can never compete
 with a lookup that has already absorbed millions of games of experience.
 `--depth 2` on the learned agent puts a search on top of the learned values:
-stronger still, and much slower.
+stronger still, and much slower. Like the plain policy, the search scores every
+move with the reward and discount the run was trained with (by default, the
+merge score and a discount of 1).
 
 ---
 
@@ -684,7 +694,7 @@ evaluation/   the fixed, seeded evaluation procedure and its statistics
 experiments/  runs a config, evaluates it, stores config+result together
 dashboard/    stdlib HTTP server, JSON API, static front end, live game thread
 config/       default.json plus 18 experiment configs
-tests/        251 tests: unit, integration, API, end-to-end, plus a benchmark
+tests/        337 tests: unit, integration, API, end-to-end, plus a benchmark
 docs/         architecture and command reference
 ```
 
@@ -770,6 +780,14 @@ Measured on the development laptop (2 cores), fresh 4×6 run, 600 games:
 
 Use at most one worker per CPU core; `train.py` warns if you ask for more.
 
+`--eval-every` and `--snapshot-every` work with any number of workers: at each
+of those points every worker finishes its share of the games, the evaluation or
+snapshot runs on weights that hold still, and a fresh set of workers carries
+on. Every game index is played exactly once, even across Ctrl-C and
+`--resume`. If a worker fails, the whole run fails with the reason — the
+others are stopped, the checkpoint is saved, `train.py` exits non-zero and the
+control center shows the job as failed.
+
 One caveat worth knowing: with a single worker a run is bit-for-bit
 reproducible from its seed. With several, the games are still seeded but the
 weight updates interleave between processes, so a rerun is statistically
@@ -826,6 +844,12 @@ Percentages come with **Wilson score intervals** rather than the usual
 normal approximation, because they stay correct near 0% and 100%; means get a
 standard normal-approximation interval.
 
+A run's current weights cannot be evaluated while that run is being trained:
+they would change from one game to the next, so the result would not describe
+any one agent. Evaluate a snapshot instead (`--snapshot-every` takes them, from
+the command line or the control center), or stop training first. While an
+evaluation of the current weights runs, training that run waits for it.
+
 ---
 
 ## Watching the AI play
@@ -845,8 +869,9 @@ game**, and watch it move.
 | **Watch current AI** | One click: load the latest checkpoint and go |
 
 The game is played by the server in a throttled background thread that stays
-only a few dozen moves ahead of what your browser has consumed, so slow
-playback costs almost no CPU and training keeps the machine.
+only a few dozen moves ahead of what your browser is showing, so slow
+playback costs almost no CPU and training keeps the machine. **Watch** on a
+snapshot in the Checkpoints page opens this view with that snapshot selected.
 
 A particular game can be linked directly:
 
@@ -940,7 +965,7 @@ python3 tests/benchmark_engine.py                # throughput benchmark
 
 On Windows use `py -m unittest discover -s tests`.
 
-**251 tests.** What they actually check:
+**337 tests.** What they actually check:
 
 - **`test_engine.py`** — merge rules including the awkward cases (`2 2 2 2` →
   `4 4 . .`, `4 4 8 8` → `8 16 . .`), that a freshly merged tile cannot merge
@@ -987,6 +1012,25 @@ On Windows use `py -m unittest discover -s tests`.
   watch the agent play, play a human game, read the statistics, list
   checkpoints, benchmark, **restart the server and confirm everything is still
   there**, then delete a checkpoint and shut down cleanly.
+- **`test_runlock.py`** — one writer per run, across real processes: a second
+  trainer (terminal, control center or experiment) is refused, a run being
+  trained elsewhere cannot be deleted or reset, **a killed trainer never
+  strands its run** (with one worker or several, killed while they start or
+  while they play), and a run's current weights cannot be evaluated while it
+  trains, while an evaluation keeps training out until it is done.
+- **`test_trainer.py`** — with several workers, evaluations and snapshots
+  happen at exactly their game counts with no worker running, every game index
+  is played once across stops and resumes, and a worker that raises, exits or
+  is killed fails the run loudly (from the command line and as a control-center
+  job); snapshots keep their own schedule and never change afterwards.
+- **`test_policy.py`** — training, its evaluations and the loaded agent choose
+  identical moves for every reward configuration, and search on top of the
+  learned values optimises the same objective.
+- **`test_games.py`** — a watched game is computed only as fast as it is shown,
+  pause and step behave, and abandoned games are cleaned up on their own.
+- **`test_frontend.py`** — the Checkpoints page's Watch button plays the
+  snapshot it was pressed on, and the live-update fallback polls only while
+  the event stream is down (run under Node.js where it is installed).
 - **`test_startup.py`** — the ways people really start and stop it: starting a
   second copy points at the first instead of failing, `--stop` and
   `--restart`, a port held by another program is left alone, **SIGTERM and
@@ -1011,6 +1055,10 @@ data/<run>/evaluations.jsonl      every fixed evaluation ever run
 data/<run>/status.json            small heartbeat file the dashboard polls
 ```
 
+`checkpoints/.locks/` holds one small file per run, which the process training
+(or deleting, or evaluating) a run locks while it works on it; see
+[Troubleshooting](#troubleshooting).
+
 Crash safety has two halves. The weights are a memory-mapped file, so the
 operating system is already writing them back as training proceeds; a
 checkpoint only has to flush the dirty pages. The metadata is small and written
@@ -1033,6 +1081,8 @@ python3 evaluate.py --agent learned --checkpoint path/to/downloaded.f32
 
 Snapshots (`--snapshot-every N`) let you compare an agent against its own
 younger self on identical games, which is the cleanest way to see improvement.
+They follow their own schedule, whatever `--checkpoint-every` is set to, and a
+snapshot is never modified once it has been written.
 
 ---
 
@@ -1253,7 +1303,7 @@ Known differences that are documented rather than papered over:
 │   ├── default.json           the default configuration
 │   └── experiments/           18 experiment configs
 │
-├── tests/                     251 tests + the engine benchmark
+├── tests/                     337 tests + the engine benchmark
 ├── docs/
 │   ├── ARCHITECTURE.md        how the pieces fit together, and why
 │   ├── COMMANDS.md            command reference, with Windows equivalents

@@ -12,6 +12,12 @@ Every reported figure comes with an interval:
   scores are an average, so the CLT applies even though scores are skewed);
 * tile achievement rates are proportions, so they get Wilson score intervals,
   which stay sensible near 0% and 100% where the normal approximation does not.
+
+"Freezes the policy" needs care for a learned agent playing a run's *current*
+weights: those are a memory map shared with any trainer of the run, so a
+read-only view of them still changes as the trainer writes. Callers make the
+freeze real with :func:`training.runlock.hold_frozen`, which holds the run's
+shared lock for the whole evaluation.
 """
 
 from __future__ import annotations

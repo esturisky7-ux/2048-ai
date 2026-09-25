@@ -32,6 +32,7 @@ from agents.registry import AGENT_NAMES                      # noqa: E402
 from training.checkpoint import Run, list_runs, read_json    # noqa: E402
 from training.config import load_config, list_experiments    # noqa: E402
 from training.ntuple import TUPLE_SETS                       # noqa: E402
+from training.runlock import RunBusy, busy_message           # noqa: E402
 from training.stats import AllTimeStats, History             # noqa: E402
 from version import __version__                              # noqa: E402
 
@@ -110,6 +111,22 @@ def _run_name(data: dict, key: str = "run", default: str = "default") -> str:
         return store.validate_run_name(name)
     except InvalidName as e:
         raise ApiError(str(e))
+
+
+def _refuse_if_run_busy(run_name: str, want_shared: bool = False) -> None:
+    """Refuse early when another process holds the run in a conflicting mode.
+
+    This is the courtesy check that turns a conflict into an immediate 409
+    with a readable reason. It is not what keeps two processes apart: the
+    process that does the work takes the run's lock itself (see
+    :mod:`training.runlock`), so a conflict that appears after this check is
+    still refused, by that process.
+    """
+    mode, note = Run(run_name).lock_holder()
+    if mode is None or (want_shared and mode == "shared"):
+        return
+    raise ApiError(busy_message(run_name, want_shared, mode, note),
+                   status=409)
 
 
 def pid_alive(pid: int) -> bool:
@@ -342,6 +359,9 @@ def status_payload(run_name: str) -> dict:
         elif MANAGER.active("experiment"):
             ai_state = "EXPERIMENTING"
     failed = [j for j in MANAGER.recent(6) if j.state == "FAILED"]
+    # Every open tab asks for this once a second, and listing runs reads
+    # each run's metadata: once per payload is plenty.
+    runs = list_runs()
 
     return {
         "run": run_name,
@@ -369,8 +389,8 @@ def status_payload(run_name: str) -> dict:
         "rolling": rolling,
         "last_eval": last_eval,
         "disk_bytes": run.size_on_disk(),
-        "runs": list_runs(),
-        "has_any_run": bool(list_runs()),
+        "runs": runs,
+        "has_any_run": bool(runs),
         "jobs": [j.to_dict(with_progress=True) for j in MANAGER.active()],
         "recent_failures": [j.to_dict(with_progress=False) for j in failed],
         "version": __version__,
@@ -428,6 +448,10 @@ def start_training(data: dict) -> dict:
             f"run '{run_name}' is already being trained by another process "
             f"(pid {external['status'].get('pid')}). Stop that first — the "
             f"Stop button works on it too.", status=409)
+    # Anything else holding the run: a trainer too new to have written its
+    # first heartbeat, an experiment, a deletion, or an evaluation of the
+    # current weights. train.py would refuse too; this just says so sooner.
+    _refuse_if_run_busy(run_name)
 
     if resume and not exists:
         raise ApiError(f"run '{run_name}' has no checkpoint to resume")
@@ -545,17 +569,22 @@ def _stop_external_training(run_name: str) -> dict:
 # ---------------------------------------------------------------------------
 def _submit_runner(job_type: str, label: str, spec: dict,
                    exclusive_key: str | None = None):
+    import uuid
     from .jobs import JOB_DIR
     JOB_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = f"{job_type}-{int(time.time() * 1000)}"
+    # Named by a random id, never by the clock: two jobs submitted within
+    # the same millisecond would otherwise share -- and overwrite -- one
+    # spec, and then one progress file and one result.
+    stamp = f"{job_type}-{uuid.uuid4().hex}"
     spec_path = JOB_DIR / f"{stamp}.spec.json"
     progress_path = JOB_DIR / f"{stamp}.progress.json"
     result_path = JOB_DIR / f"{stamp}.result.json"
     spec = dict(spec)
     spec.update({"type": job_type,
+                 "submitted_at": time.time(),
                  "progress_path": str(progress_path),
                  "result_path": str(result_path)})
-    with open(spec_path, "w", encoding="utf-8") as f:
+    with open(spec_path, "x", encoding="utf-8") as f:
         json.dump(spec, f)
 
     argv = [sys.executable, "-m", "dashboard.runner", str(spec_path)]
@@ -604,8 +633,34 @@ def _agent_spec(data: dict, prefix: str = "") -> dict:
     return spec
 
 
+def _require_frozen(spec: dict) -> None:
+    """Refuse to measure a run's current weights while it is being trained.
+
+    Those weights are a memory map the trainer writes, so a "fixed"
+    evaluation of them would really measure a policy that changes from game
+    to game. Snapshots never change, and are always accepted. The runner holds
+    the run's shared lock for the whole evaluation (see
+    :func:`training.runlock.hold_frozen`); this only refuses early.
+    """
+    if spec.get("agent") != "learned":
+        return
+    from agents.learned import live_run_for
+    run_name = live_run_for(spec["run"], spec.get("checkpoint"))
+    if run_name is None:
+        return                            # a snapshot: frozen by nature
+    job = MANAGER.active_with_key(f"run:{run_name}")
+    if job is not None:
+        raise ApiError(
+            f"run '{run_name}' is being trained by {job.type} job {job.id}, "
+            f"so its current weights keep changing and an evaluation of them "
+            f"would not measure one fixed policy. Evaluate one of its "
+            f"snapshots instead, or stop training first.", status=409)
+    _refuse_if_run_busy(run_name, want_shared=True)
+
+
 def start_evaluation(data: dict) -> dict:
     spec = _agent_spec(data)
+    _require_frozen(spec)
     spec["games"] = _int(data, "games", 200, lo=1, hi=200000)
     spec["seed"] = _int(data, "seed", 987654, lo=0, hi=2 ** 63 - 1)
     spec["save"] = bool(data.get("save", True))
@@ -628,6 +683,8 @@ def start_comparison(data: dict) -> dict:
         if not isinstance(item, dict):
             raise ApiError("each agent must be a name or an object")
         agents.append(_agent_spec(item))
+    for sub in agents:
+        _require_frozen(sub)
     spec = {
         "agents": agents,
         "games": _int(data, "games", 100, lo=1, hi=50000),
@@ -661,8 +718,27 @@ def start_experiment(data: dict) -> dict:
         "workers": _int(data, "workers", 1, lo=1, hi=64),
         "fresh": bool(data.get("fresh")),
     }
+    # A training experiment trains (and with "fresh", first resets) a real
+    # run, so it is keyed by that run exactly like a training job: neither
+    # can start while the other holds the run.
+    from experiments.runner import experiment_run_name
+    try:
+        run_name = experiment_run_name(name)
+    except (OSError, ValueError) as e:
+        raise ApiError(f"experiment {name!r} could not be read: {e}")
+    if run_name is not None:
+        run_name = _run_name({"run": run_name})
+        key = f"run:{run_name}"
+        busy = MANAGER.active_with_key(key)
+        if busy is not None:
+            raise ApiError(
+                f"{busy.type} job {busy.id} is already working on "
+                f"'{key}'. Stop it first.", status=409)
+        _refuse_if_run_busy(run_name)
+    else:
+        key = f"experiment:{name}"
     job = _submit_runner("experiment", f"experiment {name}", spec,
-                         exclusive_key=f"experiment:{name}")
+                         exclusive_key=key)
     LOG.add("info", f"experiment {name} started", job_id=job.id)
     return {"ok": True, "job": job.to_dict()}
 
@@ -731,6 +807,7 @@ def start_ai_game(data: dict) -> dict:
     try:
         SESSIONS.add(session)
     except RuntimeError as e:
+        session.stop()                 # never started: closes its agent
         raise ApiError(str(e), status=409)
     session.start()
     return {"ok": True, "session": session.snapshot(0, limit=1)}
@@ -753,10 +830,13 @@ def _session(session_id: str):
     return s
 
 
-def game_state(session_id: str, since: int = 0) -> dict:
+def game_state(session_id: str, since: int = 0,
+               cursor: int | None = None) -> dict:
+    """``since``: first frame to send. ``cursor``: the frame on screen."""
     s = _session(session_id)
     if isinstance(s, AIGameSession):
-        return s.snapshot(max(0, since))
+        return s.snapshot(max(0, since),
+                          cursor=None if cursor is None else max(0, cursor))
     return s.state()
 
 
@@ -856,7 +936,12 @@ def handle_get(path: str, query: dict) -> dict:
         rest = path[len("/api/game/"):]
         session_id, _, tail = rest.partition("/")
         if tail in ("", "state"):
-            return game_state(session_id, int(one("since", "0") or 0))
+            # Malformed numbers are a 400; negative ones count as 0, as a
+            # negative "since" always has.
+            q = {k: one(k) for k in ("since", "cursor")}
+            return game_state(session_id,
+                              _int(q, "since", 0, lo=-(10 ** 9)),
+                              _int(q, "cursor", None, lo=-(10 ** 9)))
         raise ApiError("no such game endpoint", status=404)
     raise ApiError(f"no route {path}", status=404)
 
@@ -908,6 +993,10 @@ def handle_post(path: str, data: dict) -> dict:
             result = store.delete_checkpoint(cid)
         except FileNotFoundError:
             raise ApiError("no such checkpoint", status=404)
+        except RunBusy as e:
+            # Held by a process this server did not start (a terminal, an
+            # experiment, an evaluation): the lock, not the job list, decides.
+            raise ApiError(f"cannot delete run '{run_name}': {e}", status=409)
         LOG.add("warn", f"deleted checkpoint {cid}")
         return {"ok": True, **result}
 

@@ -3,19 +3,23 @@
 Responsibilities kept here rather than in ``learner.py`` so the learning
 algorithm stays readable on its own:
 
+* own the run: hold its lock (:mod:`training.runlock`) from before the first
+  file is touched until the trainer is closed
 * drive games and feed results into rolling / all-time statistics
 * checkpoint on a game-count interval, and always on exit
+* snapshot and evaluate on their own intervals, with the weights holding still
 * append history rows so progress can be graphed afterwards
 * publish a small status file the dashboard polls
 * shut down cleanly on Ctrl-C, saving before it exits
-* optionally fan out across processes
+* optionally fan out across processes, and fail loudly if one of them dies
 
 Determinism. Each game's tile spawns come from ``Random(game_seed(seed, i))``,
 so with one worker a run is exactly reproducible and resuming continues the
-same sequence. With more than one worker the games themselves are still
-seeded, but weight updates interleave between processes, so results are
-reproducible only up to that interleaving. That is the cost of Hogwild-style
-parallelism and is called out in the README.
+same sequence. With more than one worker every index is still played exactly
+once -- including across Ctrl-C and ``--resume`` -- but weight updates
+interleave between processes, so results are reproducible only up to that
+interleaving. That is the cost of Hogwild-style parallelism and is called out
+in the README.
 
 Portability. Workers share weights through a memory map of one file, which
 every supported OS keeps coherent between processes, so ``--workers`` behaves
@@ -28,9 +32,11 @@ table building per worker at startup and nothing thereafter.
 from __future__ import annotations
 
 import os
+import queue
 import signal
 import sys
 import time
+import traceback
 from random import Random
 
 from evaluation.evaluator import game_seed
@@ -50,6 +56,28 @@ WORKER_FLUSH_EVERY = 512
 # was touched. Reporting intervals are measured in games, and a strong agent
 # plays only a few games a minute, so status gets its own wall-clock heartbeat.
 STATUS_HEARTBEAT = 3.0
+# Workers that have finished their games get this long to exit on their own;
+# after a failure the survivors get the shorter one. Then terminate(), and
+# after that kill().
+WORKER_EXIT_GRACE = 30.0
+WORKER_ABORT_GRACE = 3.0
+WORKER_KILL_GRACE = 5.0
+# A worker found dead before saying it had finished gets this long for its
+# last messages (usually the traceback of what killed it) to arrive.
+WORKER_LAST_WORDS = 1.0
+# "No end": the stop line of a segment that trains until Ctrl-C.
+_NO_END = 1 << 62
+
+
+class TrainingError(RuntimeError):
+    """Training could not play the games it was asked to.
+
+    ``details`` holds a worker's traceback when there is one.
+    """
+
+    def __init__(self, message: str, details: str | None = None):
+        super().__init__(message)
+        self.details = details
 
 
 def worker_start_method() -> str:
@@ -92,15 +120,33 @@ def alpha_at(cfg: dict, games: int) -> float:
 
 
 class Trainer:
-    """Owns one training run."""
+    """Owns one training run, from construction until :meth:`close`.
+
+    Constructing a trainer takes the run's exclusive lock before any of the
+    run's files is read or opened for writing, and raises
+    :class:`training.runlock.RunBusy` if another process holds the run. Pass
+    ``lock`` to hand over a lock the caller already holds (an experiment that
+    resets the run first does this), in which case the caller releases it.
+    """
 
     def __init__(self, run_name: str = "default", config: dict | None = None,
-                 resume: bool = False, quiet: bool = False):
-        from .config import load_config
-
+                 resume: bool = False, quiet: bool = False, lock=None,
+                 purpose: str = "training"):
         self.run = Run(run_name)
         self.quiet = quiet
         self.stop_requested = False
+        self.net = None
+        self._owns_lock = lock is None
+        self.lock = lock if lock is not None else \
+            self.run.lock(purpose=purpose).acquire()
+        try:
+            self._setup(config, resume)
+        except BaseException:
+            self.close()
+            raise
+
+    def _setup(self, config: dict | None, resume: bool) -> None:
+        from .config import load_config
 
         if resume:
             if not self.run.exists():
@@ -167,14 +213,30 @@ class Trainer:
         self._mps_ema = 0.0
         self._last_status_t = 0.0
 
+    def close(self) -> None:
+        """Unmap the weights and give up the run. Safe to call twice."""
+        if self.net is not None:
+            try:
+                self.net.close()
+            except (BufferError, ValueError, OSError):
+                pass
+            self.net = None
+        if self.lock is not None:
+            if self._owns_lock:
+                self.lock.release()
+            self.lock = None
+
     # -- signals -----------------------------------------------------------
-    def install_signal_handlers(self) -> None:
+    def install_signal_handlers(self) -> dict:
         """Turn an interrupt into a clean checkpoint instead of lost work.
 
         Ctrl-C reaches Python as SIGINT on every OS. Windows also has
         Ctrl-Break (SIGBREAK), which is the only interrupt another process can
         deliver there, so it is handled the same way; SIGTERM does not exist
         on Windows and is registered only where it does.
+
+        Returns the handlers that were replaced, for
+        :meth:`restore_signal_handlers`.
         """
         def handler(signum, frame):
             if self.stop_requested:
@@ -183,14 +245,27 @@ class Trainer:
             self.stop_requested = True
             self._log("\nstopping after the current game; "
                       "checkpointing (Ctrl-C again to force quit)")
+        previous = {}
         for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
             sig = getattr(signal, name, None)
             if sig is None:
                 continue
             try:
-                signal.signal(sig, handler)
+                previous[sig] = signal.signal(sig, handler)
             except (ValueError, OSError):
                 pass        # not the main thread, or not supported here
+        return previous
+
+    @staticmethod
+    def restore_signal_handlers(previous: dict) -> None:
+        """Put back what :meth:`install_signal_handlers` replaced, so a
+        process that goes on after training (an experiment evaluating its
+        result) is interruptible the ordinary way again."""
+        for sig, old in previous.items():
+            try:
+                signal.signal(sig, old if old is not None else signal.SIG_DFL)
+            except (ValueError, OSError, TypeError):
+                pass
 
     def _log(self, msg: str) -> None:
         if not self.quiet:
@@ -212,10 +287,24 @@ class Trainer:
             "last_eval": self.last_eval,
             "note": note,
         })
-        if self.snapshot_every and self.game_index \
-                and self.game_index % self.snapshot_every == 0:
-            path = self.run.snapshot(self.game_index)
-            self._log(f"  snapshot -> {display_path(path)}")
+
+    def take_snapshot(self) -> None:
+        """Freeze the weights as they stand after exactly ``game_index`` games.
+
+        Called only at a boundary where nothing is writing the weights: between
+        games with one worker, and with every worker stopped with several.
+        """
+        games = self.game_index
+        if self.run.snapshot_path(games).exists():
+            # Snapshots are immutable. This one was taken when an earlier
+            # session passed the same game count (it may since have crashed
+            # and resumed from an older checkpoint); it is not rewritten.
+            self._log(f"  snapshot for game {games:,} already exists; "
+                      f"kept as it is")
+            return
+        self.net.flush()
+        path = self.run.snapshot(games)
+        self._log(f"  snapshot -> {display_path(path)}")
 
     # -- reporting ---------------------------------------------------------
     def _rate(self):
@@ -305,26 +394,27 @@ class Trainer:
         self.evaluate_now()
 
     def evaluate_now(self) -> None:
-        """Freeze the policy and run the fixed evaluation procedure."""
+        """Run the fixed evaluation procedure on the policy as it stands.
+
+        Only ever called while nothing writes the weights (see
+        :meth:`_at_boundary`), so the policy really is frozen. An evaluation
+        cut short by Ctrl-C is not recorded: a partial result is not
+        comparable with the full-length ones around it.
+        """
         from evaluation.evaluator import evaluate
+        if self.stop_requested:
+            self._log("  evaluation skipped: stopping")
+            return
         self._log(f"  evaluating ({self.eval_games} fixed games)...")
-
-        class _Frozen:
-            name = "learned"
-            def __init__(self, learner, games):
-                self._l = learner
-                self._g = games
-            def act(self, b):
-                return self._l.best_action(b)
-            def new_game(self):
-                pass
-            def describe(self):
-                return {"name": "learned", "games_trained": self._g}
-
-        res = evaluate(_Frozen(self.learner, self.game_index),
+        res = evaluate(PolicyAgent(self.learner.policy(), self.game_index),
                        games=self.eval_games,
                        seed=self.config["evaluation"]["seed"],
+                       progress=lambda done, total: self.maybe_write_status(),
                        stop_flag=lambda: self.stop_requested)
+        if res.get("games", 0) < self.eval_games:
+            self._log(f"  evaluation interrupted after {res.get('games', 0)} "
+                      f"of {self.eval_games} games; not recorded")
+            return
         res["games_trained"] = self.game_index
         self.last_eval = {
             "games_trained": self.game_index,
@@ -349,8 +439,13 @@ class Trainer:
 
     # -- main loops --------------------------------------------------------
     def train(self, n_games: int = 0, workers: int = 1) -> None:
-        """Play ``n_games`` more games (0 = until interrupted)."""
-        self.install_signal_handlers()
+        """Play ``n_games`` more games (0 = until interrupted).
+
+        Raises :class:`TrainingError` if a finite target could not be
+        reached -- a worker process failed, for instance. A stop asked for with
+        Ctrl-C is not an error. Either way the checkpoint is saved first.
+        """
+        previous_handlers = self.install_signal_handlers()
         target = self.game_index + n_games if n_games else 0
         self._log(
             f"run '{self.run.name}'  tuple set {self.tuple_set} "
@@ -363,6 +458,10 @@ class Trainer:
                 self._train_parallel(target, workers)
             else:
                 self._train_serial(target)
+            if target and self.game_index < target and not self.stop_requested:
+                raise TrainingError(
+                    f"training ended at game {self.game_index:,}, short of "
+                    f"its target of {target:,}")
         finally:
             self.save(note="final")
             self.write_status(running=False)
@@ -370,95 +469,326 @@ class Trainer:
                 f"\nstopped at {self.game_index:,} games "
                 f"({self.session_games:,} this session). "
                 f"checkpoint saved to {display_path(self.run.meta_path)}")
+            self.restore_signal_handlers(previous_handlers)
+
+    def _record_game(self, index: int, score: int, moves: int,
+                     tile: int) -> None:
+        """Count one finished game (``index`` is its seed index)."""
+        self.game_index += 1
+        self.session_games += 1
+        self.session_moves += moves
+        self.rolling.add(score, moves, tile)
+        self.all_time.add(score, moves, tile)
+
+    def _after_game(self) -> None:
+        """Bookkeeping due after a game; safe while other workers still play."""
+        gi = self.game_index
+        if gi % 64 == 0:
+            self.learner.set_alpha(alpha_at(self.config, gi))
+        if self.report_every and gi % self.report_every == 0:
+            self.report()
+        if self.checkpoint_every and gi % self.checkpoint_every == 0:
+            self.save()
+
+    def _at_boundary(self) -> None:
+        """Work that needs the weights to hold still: snapshots, evaluation.
+
+        Each has its own schedule, independent of checkpointing. When several
+        fall on the same game they share one pass: one snapshot, then the
+        evaluation.
+        """
+        gi = self.game_index
+        if self.snapshot_every and gi and gi % self.snapshot_every == 0:
+            self.take_snapshot()
+        self.maybe_evaluate()
+
+    def _next_boundary(self, target: int) -> int:
+        """The next game count at which the weights must hold still (0: none)."""
+        gi = self.game_index
+        ends = [target] if target else []
+        for every in (self.eval_every, self.snapshot_every):
+            if every:
+                ends.append((gi // every + 1) * every)
+        return min(ends) if ends else 0
 
     def _train_serial(self, target: int) -> None:
         learner = self.learner
-        cfg = self.config
-        rolling = self.rolling
-        all_time = self.all_time
         while not self.stop_requested:
             if target and self.game_index >= target:
                 break
-            rng = Random(game_seed(self.seed, self.game_index))
+            index = self.game_index
+            rng = Random(game_seed(self.seed, index))
             score, moves, tile = learner.play_game(rng)
-            self.game_index += 1
-            self.session_games += 1
-            self.session_moves += moves
-            rolling.add(score, moves, tile)
-            all_time.add(score, moves, tile)
-
+            self._record_game(index, score, moves, tile)
             self.maybe_write_status()
-            if self.game_index % 64 == 0:
-                learner.set_alpha(alpha_at(cfg, self.game_index))
-            if self.report_every and self.game_index % self.report_every == 0:
-                self.report()
-            if self.checkpoint_every \
-                    and self.game_index % self.checkpoint_every == 0:
-                self.save()
-            self.maybe_evaluate()
+            self._after_game()
+            self._at_boundary()
 
     def _train_parallel(self, target: int, workers: int) -> None:
+        """Hogwild training in segments, with a clean boundary between them.
+
+        Workers play disjoint, interleaved game indices and all write the one
+        shared weight table. Snapshots and evaluations need that table to hold
+        still, so training runs in segments that end exactly at the next such
+        point: every worker plays its share of the games before it, reports,
+        and exits; the boundary work then runs with no writer alive; and a
+        fresh set of workers carries on from the very next index. Checkpoints
+        still happen mid-segment, as results arrive, as they always have.
+        """
         import multiprocessing as mp
 
         method = worker_start_method()
         ctx = mp.get_context(method)
-        # With fork the worker inherits the live network object. With spawn
-        # nothing is inherited and an mmap cannot be pickled, so the worker is
-        # told where the weight file is and maps it itself.
-        net_spec = self.net if method == "fork" else \
-            (self.tuple_set, str(self.run.weights_path))
         if method != "fork":
             self._log(f"  starting {workers} worker(s) with '{method}'; "
                       f"each builds its lookup tables once (a few seconds)")
-        q = ctx.Queue(maxsize=256)
-        stop = ctx.Event()
-        procs = []
-        start_index = self.game_index
-        for wid in range(workers):
-            p = ctx.Process(target=_worker_main,
-                            args=(wid, workers, net_spec, self.config,
-                                  self.seed, start_index, target, q, stop),
-                            daemon=True)
-            p.start()
-            procs.append(p)
+        while not self.stop_requested:
+            if target and self.game_index >= target:
+                break
+            _Segment(self, ctx, method, workers,
+                     self._next_boundary(target)).run()
+            self._at_boundary()
 
-        # The parent only aggregates; it never plays, so Ctrl-C is responsive.
-        finished = 0
+
+class PolicyAgent:
+    """A trained policy as an agent the evaluator can play.
+
+    Used for the trainer's periodic evaluation and an experiment's final one,
+    which evaluate the in-memory network directly.
+    """
+
+    name = "learned"
+
+    def __init__(self, policy, games_trained: int):
+        self.policy = policy
+        self.games_trained = games_trained
+
+    def new_game(self) -> None:
+        self.policy.new_game()
+
+    def act(self, board: int) -> int:
+        return self.policy.act(board)
+
+    def describe(self) -> dict:
+        return {"name": "learned", "games_trained": self.games_trained}
+
+
+def _describe_exit(code) -> tuple[str, str]:
+    """How a process ended, and a hint about why: ``("with exit code 3",
+    "")`` or ``("after being killed by SIGKILL", " (... out of memory?)")``."""
+    if code is None:
+        return "without an exit code", ""
+    if code < 0:
         try:
-            while finished < workers:
-                try:
-                    item = q.get(timeout=0.5)
-                except Exception:
-                    if self.stop_requested:
-                        stop.set()
-                    if not any(p.is_alive() for p in procs):
-                        break
-                    self.maybe_write_status()
-                    continue
-                if item is None:
-                    finished += 1
-                    continue
-                for score, moves, tile in item:
-                    self.game_index += 1
-                    self.session_games += 1
-                    self.session_moves += moves
-                    self.rolling.add(score, moves, tile)
-                    self.all_time.add(score, moves, tile)
-                    if self.report_every \
-                            and self.game_index % self.report_every == 0:
-                        self.report()
-                    if self.checkpoint_every \
-                            and self.game_index % self.checkpoint_every == 0:
-                        self.save()
-                self.maybe_write_status()
-                if self.stop_requested:
-                    stop.set()
+            name = signal.Signals(-code).name
+        except ValueError:
+            name = f"signal {-code}"
+        hint = " (the system may have run out of memory)" \
+            if name == "SIGKILL" else ""
+        return f"after being killed by {name}", hint
+    return f"with exit code {code}", ""
+
+
+class _Segment:
+    """One set of worker processes playing the game indices [start, end).
+
+    Worker ``w`` of ``n`` plays ``start + w``, ``start + w + n``, ... in order,
+    so the workers between them cover every index exactly once. Before
+    playing an index a worker *claims* it, under a lock shared with the
+    parent, and it never claims one at or past ``stop_at``. That line starts
+    at the segment's end and moves only when training is asked to stop:
+    see :meth:`_draw_stop_line`.
+
+    The parent counts results as they arrive, checks that each worker's
+    indices arrive in order with none missing, and watches for workers that
+    fail. A worker that raises reports its traceback before it exits; one
+    that dies outright is found by its exit code. Either way the others are
+    stopped, and :class:`TrainingError` says which worker failed and how.
+    """
+
+    def __init__(self, trainer: Trainer, ctx, method: str, workers: int,
+                 end: int):
+        self.t = trainer
+        self.ctx = ctx
+        self.start = trainer.game_index
+        self.end = end
+        self.n = max(1, min(workers, end - self.start)) if end else workers
+        # Under fork a worker inherits the live network; under spawn nothing
+        # is inherited and an mmap cannot be pickled, so the worker is told
+        # where the weight file is and maps it itself.
+        self.net_spec = trainer.net if method == "fork" else \
+            (trainer.tuple_set, str(trainer.run.weights_path))
+        self.forked_from = os.getpid() if method == "fork" else None
+        self.q = ctx.Queue(maxsize=256)
+        self.claim = ctx.Lock()
+        self.claimed = ctx.RawArray("q", [-1] * self.n)
+        self.stop_at = ctx.RawValue("q", end if end else _NO_END)
+        self.next_index = [self.start + w for w in range(self.n)]
+        self.finished = [False] * self.n
+        self.procs: list = []
+        self.failure: str | None = None
+        self.details: str | None = None
+        self.stopping = False
+
+    # -- the segment -------------------------------------------------------
+    def run(self) -> None:
+        t = self.t
+        try:
+            for w in range(self.n):
+                p = self.ctx.Process(
+                    target=_worker_main, name=f"train-worker-{w}",
+                    args=(w, self.n, self.net_spec, t.config, t.seed,
+                          self.start, self.q, self.claim, self.claimed,
+                          self.stop_at, self.forked_from),
+                    daemon=True)
+                p.start()
+                self.procs.append(p)
+            self._supervise()
         finally:
-            stop.set()
-            for p in procs:
-                p.join(timeout=30)
-                if p.is_alive():
-                    p.terminate()
+            self._shut_down(aborting=self.failure is not None
+                            or sys.exc_info()[0] is not None)
+        if self.failure is None and t.game_index != self.stop_at.value:
+            self._fail(f"the workers played {t.game_index - self.start:,} "
+                       f"games where {self.stop_at.value - self.start:,} "
+                       f"were due")
+        if self.failure is not None:
+            raise TrainingError(
+                f"{self.failure}. Training stopped at game "
+                f"{t.game_index:,}.", self.details)
+
+    def _fail(self, why: str, details: str | None = None) -> None:
+        if self.failure is None:
+            self.failure = why
+            self.details = details
+
+    def _supervise(self) -> None:
+        t = self.t
+        # The parent only aggregates; it never plays, so Ctrl-C is responsive.
+        while not all(self.finished) and self.failure is None:
+            if t.stop_requested and not self.stopping:
+                self.stopping = True
+                self._draw_stop_line()
+            try:
+                msg = self.q.get(timeout=0.5)
+            except queue.Empty:
+                self._check_for_dead_workers()
+                t.maybe_write_status()
+                continue
+            self._handle(msg)
+            t.maybe_write_status()
+
+    def _handle(self, msg) -> None:
+        kind, w = msg[0], msg[1]
+        if kind == "games":
+            for index, score, moves, tile in msg[2]:
+                if index != self.next_index[w]:
+                    self._fail(f"worker {w} of {self.n} reported game "
+                               f"{index:,} when game {self.next_index[w]:,} "
+                               f"was due")
+                    return
+                self.next_index[w] += self.n
+                self.t._record_game(index, score, moves, tile)
+                self.t._after_game()
+        elif kind == "done":
+            self.finished[w] = True
+            if msg[2] != self.next_index[w]:
+                self._fail(f"worker {w} of {self.n} stopped before game "
+                           f"{msg[2]:,}, but its results end before game "
+                           f"{self.next_index[w]:,}")
+        elif kind == "error":
+            tb = (msg[2] or "").strip()
+            last = tb.splitlines()[-1] if tb else "unknown error"
+            self._fail(f"worker {w} of {self.n} failed: {last}", tb)
+
+    def _check_for_dead_workers(self) -> None:
+        dead = [w for w, p in enumerate(self.procs)
+                if not self.finished[w] and not p.is_alive()]
+        if not dead:
+            return
+        # A worker's last messages can still be in flight when it exits:
+        # its "done", or the traceback of whatever killed it.
+        deadline = time.monotonic() + WORKER_LAST_WORDS
+        while self.failure is None and time.monotonic() < deadline \
+                and not all(self.finished[w] for w in dead):
+            try:
+                self._handle(self.q.get(timeout=0.1))
+            except queue.Empty:
+                pass
+        for w in dead:
+            if not self.finished[w]:
+                how, hint = _describe_exit(self.procs[w].exitcode)
+                self._fail(f"worker {w} of {self.n} exited {how} before "
+                           f"finishing its games{hint}")
+
+    def _draw_stop_line(self) -> None:
+        """Choose where a stop lands, so that the games played stay a prefix.
+
+        Every index below the line gets played and none at or above it:
+        setting the line just past the highest index any worker has claimed
+        lets the games in flight finish, lets a worker that is behind catch up
+        on its indices below the line, and then stops them all. The run ends
+        with exactly the games [0, line) played, so --resume carries on
+        without playing any game twice or skipping one.
+        """
+        if not self.claim.acquire(timeout=10):
+            self._fail("a worker stopped responding while holding the "
+                       "claim lock")
+            return
+        try:
+            top = max(self.claimed[:]) if self.n else -1
+            line = max(self.start, top + 1)
+            if line < self.stop_at.value:
+                self.stop_at.value = line
+        finally:
+            self.claim.release()
+
+    def _shut_down(self, aborting: bool) -> None:
+        """Let the workers exit (stopping them first when aborting), then make
+        sure every one of them is gone: terminate, kill, and join each."""
+        if aborting:
+            # Nobody claims another game; each worker stops after its current
+            # one. A worker that died holding the lock cannot block this.
+            got = self.claim.acquire(timeout=1)
+            self.stop_at.value = 0
+            if got:
+                self.claim.release()
+        deadline = time.monotonic() + (WORKER_ABORT_GRACE if aborting
+                                       else WORKER_EXIT_GRACE)
+        while any(p.is_alive() for p in self.procs) \
+                and time.monotonic() < deadline:
+            # Keep draining: a worker blocked on a full queue cannot exit.
+            try:
+                msg = self.q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            except (EOFError, OSError):
+                break
+            if not aborting:
+                self._handle(msg)
+        forced = set()
+        for w, p in enumerate(self.procs):
+            if p.is_alive():
+                forced.add(w)
+                p.terminate()
+        for p in self.procs:
+            p.join(WORKER_KILL_GRACE)
+            if p.is_alive():
+                p.kill()
+                p.join()
+        if not aborting:
+            for w, p in enumerate(self.procs):
+                if w in forced:
+                    # Every game it played was counted; only its exit hung.
+                    self.t._log(f"  worker {w} of {self.n} finished its "
+                                f"games but did not exit; it was stopped")
+                elif p.exitcode != 0:
+                    how, hint = _describe_exit(p.exitcode)
+                    self._fail(f"worker {w} of {self.n} exited {how} after "
+                               f"its last game{hint}")
+        try:
+            self.q.close()
+        except (OSError, ValueError):
+            pass
 
 
 def _open_worker_network(net_spec):
@@ -476,51 +806,111 @@ def _open_worker_network(net_spec):
     return net_spec, False
 
 
-def _worker_main(wid, n_workers, net_spec, config, seed, start_index, target,
-                 out_q, stop_ev):
+def _parent_watch(forked_from: int | None):
+    """A zero-argument test for "is the trainer that started me alive?".
+
+    Under ``fork`` the answer is the parent pid: an orphan is re-parented, so
+    ``os.getppid()`` stops matching the trainer's pid, which the trainer
+    recorded before forking (a worker that asked for its parent's pid only
+    once it was running could already be an orphan, and would never notice).
+    multiprocessing's own ``parent_process().is_alive()`` cannot be trusted
+    there, because every later sibling inherits the trainer's end of the pipe
+    it watches. Everywhere else -- ``spawn``, and all of Windows -- it can.
+    """
+    if forked_from is not None:
+        return lambda: os.getppid() == forked_from
+    import multiprocessing as mp
+    parent = mp.parent_process()
+    return parent.is_alive if parent is not None else (lambda: True)
+
+
+def _worker_main(wid, n_workers, net_spec, config, seed, start_index,
+                 out_q, claim, claimed, stop_at, forked_from=None):
     """Child process: play seeded games and update the shared weights.
 
     The weights are one memory-mapped file shared by every worker, so they all
     write into the *same* memory. Updates are not locked (Hogwild): n-tuple
     updates touch a handful of the millions of weights, collisions are rare,
     and the lost-update noise is small next to the TD error itself.
-    """
-    import signal as _signal
-    _signal.signal(_signal.SIGINT, _signal.SIG_IGN)   # parent handles Ctrl-C
 
-    net, mine = _open_worker_network(net_spec)
-    reward = RewardFunction(config.get("reward"))
-    lc = config["learning"]
-    learner = TDLearner(net, reward, alpha=alpha_at(config, start_index),
-                        gamma=lc.get("gamma", 1.0),
-                        epsilon=lc.get("epsilon", 0.0))
-    idx = start_index + wid
-    batch = []
-    played = 0
+    Messages to the parent: ``("games", wid, [(index, score, moves, tile),
+    ...])``, then ``("done", wid, next_index)``, or ``("error", wid,
+    traceback)`` if anything goes wrong.
+    """
+    # The parent handles interrupts and says when to stop. One aimed at the
+    # whole process group -- Ctrl-C in a terminal, or the control center's
+    # Ctrl-Break on Windows -- must not kill a worker half-way through a game.
+    # SIGTERM, on the other hand, is how the parent ends a worker that will
+    # not stop, so it keeps its default action: a forked worker would
+    # otherwise have inherited the trainer's own "stop after this game"
+    # handler, and shrugged it off.
+    for name, action in (("SIGINT", signal.SIG_IGN),
+                         ("SIGBREAK", signal.SIG_IGN),
+                         ("SIGTERM", signal.SIG_DFL)):
+        sig = getattr(signal, name, None)
+        if sig is not None:
+            try:
+                signal.signal(sig, action)
+            except (ValueError, OSError):
+                pass
+    parent_alive = _parent_watch(forked_from)
+
+    def send(msg) -> bool:
+        while True:
+            try:
+                out_q.put(msg, timeout=1.0)
+                return True
+            except queue.Full:
+                if not parent_alive():
+                    return False
+
+    net, mine = None, False
     try:
-        while not stop_ev.is_set():
-            if target and idx >= target:
-                break
-            rng = Random(game_seed(seed, idx))
-            batch.append(learner.play_game(rng))
+        net, mine = _open_worker_network(net_spec)
+        reward = RewardFunction(config.get("reward"))
+        lc = config["learning"]
+        learner = TDLearner(net, reward, alpha=alpha_at(config, start_index),
+                            gamma=lc.get("gamma", 1.0),
+                            epsilon=lc.get("epsilon", 0.0))
+        idx = start_index + wid
+        batch = []
+        played = 0
+        while True:
+            with claim:
+                if idx >= stop_at.value:
+                    break
+                claimed[wid] = idx
+            if not parent_alive():
+                # Nobody is left to count these games, and a new trainer may
+                # already own the run: stop writing it, and do not wait for
+                # queued messages that nobody will read.
+                out_q.cancel_join_thread()
+                return
+            score, moves, tile = learner.play_game(Random(game_seed(seed, idx)))
+            batch.append((idx, score, moves, tile))
             idx += n_workers
             played += 1
             if played % 64 == 0:
                 learner.set_alpha(alpha_at(config, idx))
             if len(batch) >= WORKER_BATCH:
-                out_q.put(batch)
+                if not send(("games", wid, batch)):
+                    out_q.cancel_join_thread()
+                    return
                 batch = []
             if played % WORKER_FLUSH_EVERY == 0:
                 net.flush()
-        if batch:
-            out_q.put(batch)
-    finally:
+        net.flush()
+        if (batch and not send(("games", wid, batch))) \
+                or not send(("done", wid, idx)):
+            out_q.cancel_join_thread()
+    except BaseException:
         try:
-            net.flush()
-            out_q.put(None)
+            out_q.put(("error", wid, traceback.format_exc()), timeout=5)
         except Exception:
             pass
-        if mine:
+        raise
+    finally:
+        if mine and net is not None:
             try:
                 net.close()
             except Exception:

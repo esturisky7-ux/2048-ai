@@ -95,7 +95,10 @@ def self_check() -> int:
                                                 "eval_every": 0}})
             from training.trainer import Trainer, worker_start_method
             t = Trainer("selfcheck", cfg, quiet=True)
-            t.train(n_games=20)
+            try:
+                t.train(n_games=20)
+            finally:
+                t.close()
             print(f"training      ok  (20 games, best score "
                   f"{t.all_time.best_score:,})")
             print(f"checkpoint    ok  (wrote {t.run.meta_path.name} and "
@@ -203,16 +206,29 @@ def main() -> int:
         run_name = cfg["run"]
         cfg_over = cfg
 
-    from training.trainer import Trainer
-    trainer = Trainer(run_name, cfg_over, resume=args.resume, quiet=args.quiet)
+    from training.runlock import RunBusy
+    from training.trainer import Trainer, TrainingError
+    try:
+        trainer = Trainer(run_name, cfg_over, resume=args.resume,
+                          quiet=args.quiet, purpose="training, train.py")
+    except RunBusy as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
 
-    if args.evaluate_now:
-        trainer.eval_games = args.eval_games or trainer.eval_games
-        trainer.evaluate_now()
-        trainer.save(note="manual evaluation")
-        return 0
-
-    trainer.train(n_games=args.games, workers=max(1, args.workers))
+    try:
+        if args.evaluate_now:
+            trainer.eval_games = args.eval_games or trainer.eval_games
+            trainer.evaluate_now()
+            trainer.save(note="manual evaluation")
+            return 0
+        trainer.train(n_games=args.games, workers=max(1, args.workers))
+    except TrainingError as e:
+        # Printed last, so it is the line a supervisor (the control center's
+        # job list) reports as the reason the job failed.
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        trainer.close()
     return 0
 
 

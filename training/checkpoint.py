@@ -10,6 +10,9 @@ directories named after it:
     data/<run>/history.jsonl          periodic training snapshots (for graphs)
     data/<run>/evaluations.jsonl      fixed-procedure evaluation results
 
+plus ``checkpoints/.locks/<run>.lock``, the operating-system lock that decides
+which process may write the run (see :mod:`training.runlock`).
+
 Crash safety has two halves. The weights are a memory-mapped file, so the
 kernel is already writing them back as training proceeds; a checkpoint only
 has to ``flush()`` the dirty pages. The metadata is small and is written with
@@ -37,6 +40,10 @@ ROOT = Path(__file__).resolve().parent.parent
 HOME = Path(os.environ.get("AI2048_HOME") or ROOT)
 CHECKPOINT_ROOT = HOME / "checkpoints"
 DATA_ROOT = HOME / "data"
+# Run locks live beside the runs rather than inside them, so deleting a run
+# cannot delete the lock that protects the deletion. The leading dot keeps the
+# name clear of every valid run name.
+LOCK_DIR_NAME = ".locks"
 
 
 def python_command() -> str:
@@ -111,6 +118,27 @@ class Run:
         self.history_path = self.data_dir / "history.jsonl"
         self.eval_path = self.data_dir / "evaluations.jsonl"
         self.status_path = self.data_dir / "status.json"
+        self.lock_path = Path(CHECKPOINT_ROOT) / LOCK_DIR_NAME / f"{name}.lock"
+
+    # -- ownership ---------------------------------------------------------
+    def lock(self, shared: bool = False, purpose: str = ""):
+        """A lock on this run, not yet acquired; see :mod:`training.runlock`.
+
+        Exclusive (the default) for training, resetting and deleting; shared
+        for evaluating the current weights, which must not change meanwhile.
+        """
+        from .runlock import RunLock
+        return RunLock(self.lock_path, self.name, shared=shared,
+                       purpose=purpose)
+
+    def lock_holder(self):
+        """``(mode, note)`` for whoever holds this run right now, if anyone.
+
+        Only good for early, friendly refusals: the answer can change the
+        moment it is returned. See :func:`training.runlock.inspect`.
+        """
+        from .runlock import inspect
+        return inspect(self.lock_path)
 
     # -- lifecycle ---------------------------------------------------------
     def exists(self) -> bool:
@@ -146,11 +174,31 @@ class Run:
             pass
 
     # -- snapshots ---------------------------------------------------------
+    def snapshot_path(self, games: int) -> Path:
+        return self.snapshot_dir / f"games-{games:09d}.f32"
+
     def snapshot(self, games: int) -> str:
-        """Freeze a copy of the weights so runs can be compared later."""
+        """Freeze a copy of the weights so runs can be compared later.
+
+        A snapshot is immutable: one that already exists is never rewritten,
+        even by a run that resumes from an earlier checkpoint and passes the
+        same game count again. The copy is made under a temporary name and
+        renamed into place, so nothing ever sees half a snapshot.
+        """
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-        dst = self.snapshot_dir / f"games-{games:09d}.f32"
-        shutil.copyfile(self.weights_path, dst)
+        dst = self.snapshot_path(games)
+        if dst.exists():
+            return str(dst)
+        tmp = dst.with_name(dst.name + ".tmp")
+        try:
+            shutil.copyfile(self.weights_path, tmp)
+            os.replace(tmp, dst)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
         return str(dst)
 
     def list_snapshots(self):
@@ -169,6 +217,25 @@ class Run:
                 except OSError:
                     pass
         return total
+
+
+def run_for_weights(path):
+    """Which run a weight file belongs to: ``(run_name, live)``, or ``None``.
+
+    ``live`` is True for a run's current ``weights.f32`` -- the file a trainer
+    writes while it runs -- and False for one of its frozen snapshots. A file
+    outside the checkpoint directory belongs to no run.
+    """
+    try:
+        rel = Path(path).resolve().relative_to(Path(CHECKPOINT_ROOT).resolve())
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if len(parts) == 2 and parts[1] == "weights.f32":
+        return parts[0], True
+    if len(parts) == 3 and parts[1] == "snapshots":
+        return parts[0], False
+    return None
 
 
 def list_runs():

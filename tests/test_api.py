@@ -129,6 +129,39 @@ class TestRouting(SandboxedRoots):
         self.assertEqual(p["state"], "STOPPED")
         self.assertEqual(p["games"], 0)
 
+    def test_status_lists_the_runs_once_per_payload(self):
+        """Every open tab builds one of these a second."""
+        from unittest import mock
+        self.make_run("a")
+        self.make_run("b")
+        calls = []
+
+        def counting():
+            calls.append(1)
+            return CP.list_runs()
+        with mock.patch.object(api, "list_runs", counting):
+            p = api.status_payload("a")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual({r["name"] for r in p["runs"]}, {"a", "b"})
+        self.assertTrue(p["has_any_run"])
+
+    def test_evaluations_are_read_newest_first_and_only_as_needed(self):
+        run = self.make_run("evals")
+        rows = [{"games": 10, "mean_score": float(i)} for i in range(6)]
+        with open(run.eval_path, "w", encoding="utf-8") as f:
+            for i, row in enumerate(rows):
+                f.write(json.dumps(row) + "\n")
+                if i == 2:
+                    f.write('{"torn": \n\n')        # a crash mid-write
+        means = lambda got: [r["mean_score"] for r in got]    # noqa: E731
+        self.assertEqual(means(store.list_evaluations("evals", 2)), [4.0, 5.0])
+        self.assertEqual(means(store.list_evaluations("evals", 4)),
+                         [2.0, 3.0, 4.0, 5.0])
+        self.assertEqual(means(store.list_evaluations("evals", 100)),
+                         [float(i) for i in range(6)])
+        self.assertEqual(api.status_payload("evals")["last_eval"]
+                         ["mean_score"], 5.0)
+
     def test_status_has_the_fields_the_overview_needs(self):
         self.make_run(games=5000)
         p = api.handle_get("/api/status", {})

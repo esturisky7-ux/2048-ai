@@ -125,6 +125,10 @@ python3 train.py --games 20000 --eval-every 5000 --eval-games 200
 python3 train.py --games 20000 --quiet                 # no progress lines
 ```
 
+Snapshots and evaluations keep their own schedules, independent of
+`--checkpoint-every`, and work with any `--workers`: the workers stop at each
+point so the weights hold still for it.
+
 ### Evaluate the current checkpoint and stop
 
 ```bash
@@ -198,6 +202,10 @@ py evaluate.py --agent learned --checkpoint checkpoints\default\snapshots\games-
 ```
 
 PowerShell accepts forward slashes in paths too, so the Linux form also works.
+
+A run's *current* weights cannot be evaluated while that run is being trained
+(they would change during the evaluation); `evaluate.py` says so and exits
+with status 1. Snapshots can be evaluated at any time.
 
 ### Saving results
 
@@ -340,7 +348,7 @@ curl -s -X POST http://127.0.0.1:8000/api/training/stop \
 | `GET /api/experiments` · `POST /api/experiments/run` | The experiment lab |
 | `GET /api/checkpoints` · `POST /api/checkpoints/label` · `/delete` | Checkpoints |
 | `POST /api/game/ai/start` · `POST /api/game/human/start` | Start a game |
-| `GET /api/game/{id}?since=` · `POST /api/game/{id}/move` · `/control` | Play it |
+| `GET /api/game/{id}?since=&cursor=` · `POST /api/game/{id}/move` · `/control` | Play it (`cursor`: the frame on screen, which the server stays a few dozen frames ahead of) |
 | `GET /api/system` · `GET /api/logs` | Diagnostics |
 | `GET /api/settings` · `POST /api/settings` | UI preferences |
 | `POST /api/shutdown` | Stop the server gracefully (what `--stop` uses) |
