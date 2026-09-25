@@ -194,7 +194,14 @@ def list_checkpoints() -> list[dict]:
 
 
 def delete_checkpoint(cid: str) -> dict:
-    """Delete a snapshot, or an entire run. Never touches anything else."""
+    """Delete a snapshot, or an entire run. Never touches anything else.
+
+    Deleting a run takes the run's exclusive lock first and holds it until
+    the files are gone, so a run that any process is training -- started
+    from here, from a terminal, or by an experiment -- or evaluating is
+    refused with :class:`training.runlock.RunBusy` rather than deleted from
+    under it.
+    """
     run_name, snap = parse_checkpoint_id(cid)
     if snap is not None:
         path = checkpoint_path(cid)
@@ -205,10 +212,11 @@ def delete_checkpoint(cid: str) -> dict:
     run = Run(run_name)
     root_ck, root_dt = Path(CHECKPOINT_ROOT), Path(DATA_ROOT)
     removed = []
-    for path, parent in ((run.dir, root_ck), (run.data_dir, root_dt)):
-        if path.exists() and _inside(path, parent):
-            shutil.rmtree(path, ignore_errors=True)
-            removed.append(str(path.name))
+    with run.lock(purpose="deleting the run").acquire(wait=1.0):
+        for path, parent in ((run.dir, root_ck), (run.data_dir, root_dt)):
+            if path.exists() and _inside(path, parent):
+                shutil.rmtree(path, ignore_errors=True)
+                removed.append(str(path.name))
     set_label(cid, None)
     return {"deleted": cid, "kind": "run", "removed": removed}
 
@@ -217,8 +225,16 @@ def delete_checkpoint(cid: str) -> dict:
 # Saved comparison and benchmark results
 # ---------------------------------------------------------------------------
 def _save_json_result(directory: Path, payload: dict, prefix: str) -> str:
+    """Save one result under a name of its own; returns the name.
+
+    The time leads the name only so that names sort oldest to newest; the
+    random part is what makes each name unique, so two results finished in
+    the same millisecond are both kept.
+    """
+    import uuid
     directory.mkdir(parents=True, exist_ok=True)
-    name = f"{prefix}-{int(time.time() * 1000)}.json"
+    name = (f"{prefix}-{int(time.time() * 1000):013d}-"
+            f"{uuid.uuid4().hex[:12]}.json")
     atomic_write_json(directory / name, payload)
     return name
 
@@ -261,17 +277,23 @@ def list_evaluations(run_name: str, limit: int = 200) -> list[dict]:
         return rows
     try:
         with open(run.eval_path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
+            lines = f.readlines()
     except OSError:
         return []
-    return rows[-limit:]
+    # Parsed newest first, and only as far back as asked: the status payload
+    # wants just the latest one, every second, from every open tab.
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+        if 0 < limit <= len(rows):
+            break
+    rows.reverse()
+    return rows
 
 
 # ---------------------------------------------------------------------------

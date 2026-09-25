@@ -22,7 +22,14 @@ Three things keep it affordable on a slow CPU:
     quickly and the effective depth adapts to how crowded the board is.
 ``transposition table``
     The same position is reached by many move orders. Results are memoised per
-    (afterstate, remaining depth); the table is bounded and cleared when full.
+    (afterstate, remaining depth, probability of reaching it); the table is
+    bounded and cleared when full. The probability belongs in the key because
+    it decides where the search below that node is cut off: a value computed
+    for one line of play is wrong for a likelier or rarer one, and reusing it
+    made a move depend on what had been searched before (about 3% of moves at
+    depth 3). Keyed this way a hit is exactly what a fresh search would
+    compute, for about 5-10% more time with ``--adaptive`` or at depth 3 and
+    none at depth 2, where the table almost never hits anyway.
 
 Measured on the target machine (Celeron 3865U, 6 games per row):
 
@@ -137,7 +144,9 @@ class ExpectimaxAgent(Agent):
             self.nodes += 1
             return self.evaluator(afterstate)
 
-        key = (afterstate, depth)
+        # ``prob`` decides which descendants get cut off, so it is part of
+        # what was computed: see "transposition table" in the module notes.
+        key = (afterstate, depth, prob)
         cached = self._table.get(key)
         if cached is not None:
             return cached

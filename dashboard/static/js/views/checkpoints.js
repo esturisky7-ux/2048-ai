@@ -81,7 +81,13 @@ App.views.checkpoints = {
       el("div", { class: "faint mono", style: "font-size:11px" }, c.id));
 
     const watch = el("button", { class: "btn btn-sm" }, "Watch");
-    watch.onclick = () => { App.setRun(c.run); App.go("play/watch"); };
+    watch.onclick = () => {
+      App.setRun(c.run);
+      // A snapshot travels in the route, so the Play page can select it;
+      // the current weights are that page's default already.
+      App.go(c.kind === "snapshot"
+        ? `play/watch/${encodeURIComponent(c.id)}` : "play/watch");
+    };
     const evaluate = el("button", { class: "btn btn-sm" }, "Evaluate");
     evaluate.onclick = async () => {
       evaluate.disabled = true;

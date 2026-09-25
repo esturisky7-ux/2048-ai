@@ -211,6 +211,135 @@ class TestExpectimaxSearch(unittest.TestCase):
         self.assertIn(a, legal)
 
 
+def uncached_move_values(agent, board):
+    """Each legal move's value, from a from-scratch search with no table.
+
+    The same algorithm as ExpectimaxAgent -- depth, adaptive deepening,
+    probability cutoff and all -- so any difference is the table's doing.
+    """
+    ev, cut = agent.evaluator, agent.prob_cutoff
+    sw, lost = agent.score_weight, agent.lost_penalty
+
+    def chance(after, depth, prob):
+        if depth <= 0 or prob < cut:
+            return ev(after)
+        cells = B.spawn_positions(after)
+        if not cells:
+            return best(after, depth, prob)
+        p2, p4 = 0.9 / len(cells), 0.1 / len(cells)
+        total = 0.0
+        for c in cells:
+            total += p2 * best(after | (1 << 4 * c), depth, prob * p2)
+            total += p4 * best(after | (2 << 4 * c), depth, prob * p4)
+        return total
+
+    def best(b, depth, prob):
+        if depth <= 0 or prob < cut:
+            return ev(b)
+        vals = [sw * g + chance(nb, depth - 1, prob)
+                for nb, g, moved in (B.move(b, a) for a in B.ACTIONS) if moved]
+        return max(vals) if vals else -lost
+
+    return {a: sw * g + chance(nb, search_depth(agent, board) - 1, 1.0)
+            for a, (nb, g, moved) in ((a, B.move(board, a)) for a in B.ACTIONS)
+            if moved}
+
+
+def search_depth(agent, board):
+    depth = agent.depth
+    if agent.adaptive:
+        empties = B.empty_count(board)
+        depth += 2 if empties <= 3 else 1 if empties <= 6 else 0
+    return depth
+
+
+def cached_move_values(agent, board):
+    """The same values, as the agent computes them: through its table."""
+    return {a: agent.score_weight * g +
+            agent._chance(nb, search_depth(agent, board) - 1, 1.0)
+            for a, (nb, g, moved) in ((a, B.move(board, a)) for a in B.ACTIONS)
+            if moved}
+
+
+def argmax(values):
+    return max(values, key=lambda a: (values[a], -a))
+
+
+class TestTranspositionTable(unittest.TestCase):
+    """A cached value must be exactly what a fresh search would compute.
+
+    The probability of reaching a node decides where the search below it is
+    cut off, so a table keyed without it handed one line of play another's
+    value -- measurably at depth 3, where about 3% of moves along real games
+    differed from a search without the table.
+    """
+
+    SETTINGS = ({"depth": 3, "prob_cutoff": 5e-3},
+                {"depth": 1, "prob_cutoff": 1e-3, "adaptive": True})
+
+    def test_cached_search_matches_an_uncached_one_along_real_games(self):
+        for kw in self.SETTINGS:
+            with self.subTest(**kw):
+                agent = ExpectimaxAgent(0, **kw)
+                rng = Random(0)
+                b = B.new_game(rng)
+                agent.new_game()
+                positions = 0
+                while B.legal_actions(b) and positions < 150:
+                    # The table is warm from every earlier move of the game.
+                    self.assertEqual(cached_move_values(agent, b),
+                                     uncached_move_values(agent, b),
+                                     f"\n{B.render(b)}")
+                    a = agent.act(b)
+                    self.assertEqual(a, argmax(uncached_move_values(agent, b)))
+                    b = B.random_spawn(B.move(b, a)[0], rng)
+                    positions += 1
+                self.assertGreater(len(agent._table), 0)
+
+    def test_a_move_does_not_depend_on_what_was_searched_before(self):
+        rng = Random(21)
+        boards = []
+        while len(boards) < 10:
+            b = B.new_game(rng)
+            for _ in range(rng.randrange(40, 300)):
+                legal = B.legal_actions(b)
+                if not legal:
+                    break
+                b = B.random_spawn(B.move(b, rng.choice(legal))[0], rng)
+            if B.legal_actions(b):
+                boards.append(b)
+        for kw in self.SETTINGS:
+            with self.subTest(**kw):
+                for x, y in zip(boards, boards[1:] + boards[:1]):
+                    fresh = ExpectimaxAgent(0, **kw)
+                    warm = ExpectimaxAgent(0, **kw)
+                    warm.act(y)                      # search another board first
+                    self.assertEqual(cached_move_values(warm, x),
+                                     cached_move_values(fresh, x))
+                    self.assertEqual(warm.act(x), fresh.act(x))
+
+    def test_the_table_is_still_used(self):
+        agent = ExpectimaxAgent(0, depth=3, prob_cutoff=5e-3)
+        rng = Random(4)
+        b = B.new_game(rng)
+        for _ in range(30):
+            if not B.legal_actions(b):
+                break
+            b = B.random_spawn(B.move(b, agent.act(b))[0], rng)
+        nodes_with_table = agent.nodes
+        self.assertGreater(len(agent._table), 100)
+        # The same positions without a table take strictly more leaf work.
+        bare = ExpectimaxAgent(0, depth=3, prob_cutoff=5e-3, max_table=-1)
+        rng = Random(4)
+        b = B.new_game(rng)
+        for _ in range(30):
+            if not B.legal_actions(b):
+                break
+            bare._table.clear()
+            b = B.random_spawn(B.move(b, bare.act(b))[0], rng)
+        self.assertLessEqual(nodes_with_table, bare.nodes)
+
+
 class TestRegistry(unittest.TestCase):
     def test_make_known_agents(self):
         for n in ("random", "heuristic", "expectimax"):

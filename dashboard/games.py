@@ -8,9 +8,11 @@ between two rule sets instead of two players. The browser draws boards and
 sends key presses; every rule is applied by :mod:`engine.board`.
 
 AI sessions run a throttled worker thread that stays a little ahead of what the
-viewer has consumed, so slow playback costs almost no CPU and training keeps
-the machine. Human sessions are pure request/response and hold no thread at
-all.
+viewer has *displayed* -- the browser reports its playback cursor with every
+poll -- so slow playback costs almost no CPU and training keeps the machine.
+Human sessions are pure request/response and hold no thread at all. Sessions
+nobody looks at any more are collected on a timer of their own, which stops
+their thread and closes their agent.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ MAX_FRAMES = 30000
 # closed mid-game does not leak a thread.
 SESSION_TTL = 900.0
 MAX_SESSIONS = 12
+# How often the collector looks for such sessions.
+JANITOR_INTERVAL = 30.0
 
 _ids = itertools.count(1)
 
@@ -69,6 +73,8 @@ class AIGameSession:
         self._step_once = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._closed = False
+        self._close_lock = threading.Lock()
 
     # -- control -----------------------------------------------------------
     def start(self) -> None:
@@ -77,8 +83,23 @@ class AIGameSession:
         self._thread.start()
 
     def stop(self) -> None:
+        """End the session: the thread exits after the move it is choosing,
+        and the agent is closed (right away, if no thread is running)."""
         self._stop.set()
         self._step_once.set()
+        if not self.is_alive():
+            self._close_agent()
+
+    def _close_agent(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+        if hasattr(self.agent, "close"):
+            try:
+                self.agent.close()
+            except Exception:
+                pass
 
     def pause(self) -> None:
         self.paused = True
@@ -152,17 +173,23 @@ class AIGameSession:
             self.error = f"{type(e).__name__}: {e}"
         finally:
             self.done = True
-            if hasattr(self.agent, "close"):
-                try:
-                    self.agent.close()
-                except Exception:
-                    pass
+            self._close_agent()
 
     # -- reading -----------------------------------------------------------
-    def snapshot(self, since: int, limit: int = 160) -> dict:
+    def snapshot(self, since: int, limit: int = 160,
+                 cursor: int | None = None) -> dict:
+        """Frames from ``since`` on, and what the viewer has reached.
+
+        ``cursor`` is the frame the viewer is *displaying*, which is what the
+        worker stays ``BUFFER_AHEAD`` frames ahead of. A viewer that fetches
+        frames faster than it plays them must say so, or slow playback would
+        compute the whole game up front. Without a cursor, fetched frames
+        count as displayed, as they did before cursors existed.
+        """
         self.touched_at = time.time()
         with self.lock:
-            self.viewer_pos = max(self.viewer_pos, since)
+            self.viewer_pos = max(self.viewer_pos,
+                                  since if cursor is None else cursor)
             total = len(self.frames)
             chunk = self.frames[since:since + limit]
             last = self.frames[-1] if self.frames else None
@@ -237,14 +264,48 @@ class HumanGameSession:
 
 
 class SessionManager:
-    """Holds the live game sessions, with a cap and a time-to-live."""
+    """Holds the live game sessions, with a cap and a time-to-live.
 
-    def __init__(self):
+    Expired sessions are collected every ``janitor_interval`` seconds by a
+    background thread, started with the first session, so an abandoned game
+    -- a tab closed mid-game, or left paused -- is cleaned up even if no other
+    game is ever started.
+    """
+
+    def __init__(self, janitor_interval: float | None = None):
         self.sessions: dict[str, object] = {}
         self.lock = threading.Lock()
+        self.janitor_interval = janitor_interval
+        self._janitor: threading.Thread | None = None
+        self._janitor_stop = threading.Event()
+
+    def _ensure_janitor(self) -> None:
+        # One that was told to stop may not have exited yet; it has its own
+        # stop event, so a new one can start beside it.
+        if self._janitor is not None and self._janitor.is_alive() \
+                and not self._janitor_stop.is_set():
+            return
+        self._janitor_stop = threading.Event()
+        self._janitor = threading.Thread(
+            target=self._janitor_loop, args=(self._janitor_stop,),
+            daemon=True, name="game-janitor")
+        self._janitor.start()
+
+    def _janitor_loop(self, stop: threading.Event) -> None:
+        while not stop.wait(self.janitor_interval or JANITOR_INTERVAL):
+            try:
+                self.collect()
+            except Exception:
+                pass          # a failed sweep must not end the sweeping
+
+    def collect(self) -> list[str]:
+        """Drop every session untouched for ``SESSION_TTL`` seconds."""
+        with self.lock:
+            return self._collect_locked()
 
     def add(self, session) -> object:
         with self.lock:
+            self._ensure_janitor()
             self._collect_locked()
             if len(self.sessions) >= MAX_SESSIONS:
                 # Drop the oldest finished session to make room; if they are
@@ -290,14 +351,17 @@ class SessionManager:
             except Exception:
                 pass
 
-    def _collect_locked(self) -> None:
+    def _collect_locked(self) -> list[str]:
         now = time.time()
-        for sid in [s for s, obj in self.sessions.items()
-                    if now - getattr(obj, "touched_at", now) > SESSION_TTL]:
+        stale = [s for s, obj in self.sessions.items()
+                 if now - getattr(obj, "touched_at", now) > SESSION_TTL]
+        for sid in stale:
             self._drop_locked(sid)
+        return stale
 
     def stop_all(self) -> None:
         with self.lock:
+            self._janitor_stop.set()
             for sid in list(self.sessions):
                 self._drop_locked(sid)
 

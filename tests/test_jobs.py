@@ -125,7 +125,8 @@ class TestStopping(JobManagerTest):
         self.assertEqual(job.state, J.CANCELLED)
         self.assertTrue(os.path.exists(marker),
                         "the child was killed before it could save")
-        self.assertEqual(open(marker, encoding="utf-8").read(), "saved")
+        with open(marker, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "saved")
 
     def test_stop_is_idempotent_and_safe_on_dead_jobs(self):
         job = self.mgr.submit("test", "quick", self.python("pass"))
@@ -237,6 +238,57 @@ class TestBookkeeping(JobManagerTest):
         job = self.mgr.submit("test", "quick", self.python("pass"))
         self.assertTrue(wait_until(lambda: job.state in J.TERMINAL_STATES))
         self.assertEqual(job.state, J.COMPLETED)
+
+
+class TestSameMillisecond(JobManagerTest):
+    """Job files and saved results used to be named by the clock, so two
+    submitted in the same millisecond shared -- and overwrote -- one set."""
+
+    FROZEN = 1_700_000_000.123
+
+    def test_runner_jobs_submitted_together_stay_independent(self):
+        from unittest import mock
+        from dashboard import api
+        specs = [{"agent": "random", "games": 3, "seed": 11},
+                 {"agent": "heuristic", "games": 4, "seed": 22}]
+        saved, api.MANAGER = api.MANAGER, self.mgr
+        try:
+            with mock.patch.object(time, "time", return_value=self.FROZEN):
+                jobs = [api._submit_runner("evaluation", f"eval {i}", spec)
+                        for i, spec in enumerate(specs)]
+        finally:
+            api.MANAGER = saved
+        paths = [(j.params["progress_path"], j.params["result_path"],
+                  j._log_path) for j in jobs]
+        self.assertEqual(len({p for trio in paths for p in map(str, trio)}),
+                         6, paths)
+        self.assertTrue(wait_until(lambda: all(
+            j.state in J.TERMINAL_STATES for j in jobs), timeout=120))
+        for job, spec in zip(jobs, specs):
+            self.assertEqual(job.state, J.COMPLETED, "\n".join(job.tail()))
+            self.assertEqual(job.params["submitted_at"], self.FROZEN)
+            self.assertEqual(job.result["agent"]["name"], spec["agent"])
+            self.assertEqual(job.result["games"], spec["games"])
+            self.assertEqual(job.result["seed"], spec["seed"])
+            self.assertEqual(job.progress()["phase"], "done")
+            self.assertEqual(job.progress()["total"], spec["games"])
+
+    def test_results_saved_together_are_both_kept(self):
+        from unittest import mock
+        from dashboard import store
+        saved = store.COMPARISON_DIR
+        store.COMPARISON_DIR = Path(self.tmp) / "comparisons"
+        try:
+            with mock.patch.object(time, "time", return_value=self.FROZEN):
+                names = [store.save_comparison({"n": n}) for n in (1, 2)]
+            later = store.save_comparison({"n": 3})
+            self.assertEqual(len(set(names)), 2)
+            listed = store.list_comparisons()
+            self.assertEqual(sorted(r["n"] for r in listed), [1, 2, 3])
+            self.assertEqual(listed[0]["n"], 3, "newest first")
+            self.assertEqual(listed[0]["_file"], later)
+        finally:
+            store.COMPARISON_DIR = saved
 
 
 class TestPlatform(unittest.TestCase):

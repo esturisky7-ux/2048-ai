@@ -5,6 +5,11 @@
  * of 2048 in JavaScript that could disagree with the first.
  */
 
+/* A route segment, decoded; a malformed one decodes to nothing at all. */
+function safeDecode(part) {
+  try { return decodeURIComponent(part); } catch (_) { return ""; }
+}
+
 const SPEEDS = [
   { value: 0.25, label: "0.25×" }, { value: 0.5, label: "0.5×" },
   { value: 1, label: "1×" }, { value: 2, label: "2×" },
@@ -32,7 +37,7 @@ App.views.play = {
     root.append(this.body);
     if (this.tab === "human") this.mountHuman();
     else if (this.tab === "versus") this.mountVersus();
-    else this.mountWatch();
+    else this.mountWatch(args[1] ? safeDecode(args[1]) : "");
   },
 
   unmount() {
@@ -41,7 +46,11 @@ App.views.play = {
   },
 
   /* ================================================================ WATCH */
-  mountWatch() {
+  /* `checkpoint`: a snapshot id from the route (#/play/watch/<id>), as the
+   * Checkpoints page's Watch button sends it. It is selected only if the
+   * server lists it for the current run; the server checks it again when the
+   * game starts. */
+  mountWatch(checkpoint = "") {
     const state = this.watch = {
       session: null, frames: [], cursor: 0, fetched: 0, playing: false,
       speed: App.settings.playback_speed || 1, done: false,
@@ -158,7 +167,11 @@ App.views.play = {
     const poll = async () => {
       if (!state.session) return;
       try {
-        const snap = await API.get(`/api/game/${state.session}`, { since: state.fetched });
+        // `cursor` is the frame on screen, which is what the server stays a
+        // few dozen frames ahead of. Fetching is not watching: at 0.25x the
+        // buffer here fills long before the frames are shown.
+        const snap = await API.get(`/api/game/${state.session}`,
+          { since: state.fetched, cursor: state.cursor });
         state.lastSnap = snap;
         if (snap.error) { Toast.error("Game error", snap.error); finish(); return; }
         if (snap.frames && snap.frames.length) {
@@ -297,7 +310,18 @@ App.views.play = {
           pauseBtn, stepBtn, restartBtn, stopBtn),
         hint)));
 
-    this.loadCheckpointOptions(ckptSel);
+    this.loadCheckpointOptions(ckptSel).then(() => {
+      if (!checkpoint || state.session) return;
+      if ([...ckptSel.options].some((o) => o.value === checkpoint)) {
+        agentSel.value = "learned";
+        syncAgent();
+        ckptSel.value = checkpoint;
+        hint.textContent = "Snapshot selected. Press Start game to watch it play.";
+      } else {
+        hint.textContent = `Checkpoint ${checkpoint} is not available for run ` +
+          `“${App.run}”; playing with the latest weights instead.`;
+      }
+    });
   },
 
   stopWatch() {
@@ -484,7 +508,9 @@ App.views.play = {
       const poll = async () => {
         if (!st.aiSession) return;
         let snap;
-        try { snap = await API.get(`/api/game/${st.aiSession}`, { since: fetched }); }
+        // Every fetched frame is shown at once (the board jumps to the
+        // latest), so everything fetched counts as displayed.
+        try { snap = await API.get(`/api/game/${st.aiSession}`, { since: fetched, cursor: fetched }); }
         catch (_) { setTimeout(poll, 500); return; }
         if (snap.frames?.length) { frames.push(...snap.frames); fetched += snap.frames.length; }
         const last = frames[frames.length - 1];

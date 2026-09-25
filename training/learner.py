@@ -36,6 +36,18 @@ of stochasticity, every game visits a different part of the state space, and
 epsilon-greedy is known to *hurt* on 2048 because a single random move late in
 a game can destroy a structure that took hundreds of moves to build. An
 ``epsilon`` knob exists for experiments and is on-policy when used.
+
+Playing the trained policy
+--------------------------
+``V`` estimates the return of whatever reward the run was trained on, with
+that run's discount, so the only policy it describes is the one training
+followed: ``argmax r(a) + gamma * V(afterstate(a))`` with the *configured*
+reward -- shaping terms included, and with milestone bonuses tracked through
+the game exactly as training tracks them. :func:`best_move` is that one scorer.
+Training, the trainer's periodic evaluation, experiments and the loaded
+:class:`~agents.learned.LearnedAgent` all go through it (via
+:class:`GreedyPolicy`), so they cannot drift apart. With the default reward
+(pure merge score, gamma 1) it is exactly ``merge score + V(afterstate)``.
 """
 
 from __future__ import annotations
@@ -48,6 +60,66 @@ from .reward import RewardFunction
 _MOVE = B.move
 _SPAWN = B.random_spawn
 _NEG_INF = float("-inf")
+
+
+def best_move(b: int, max_exp: int, value, gamma: float,
+              reward: RewardFunction, move=_MOVE):
+    """The move the value function prefers from ``b``, scored as training does.
+
+    Each legal move scores ``r + gamma * value(afterstate)``, where ``r`` is
+    ``reward.step(...)`` -- or just the merge score when the reward is pure
+    score, which is the same number computed faster. ``max_exp`` is the
+    largest tile exponent this game has produced so far, which milestone
+    rewards need. Ties go to the first move in UP, RIGHT, DOWN, LEFT order.
+
+    Returns ``(v, (action, afterstate, value, r, merge_score))`` for the best
+    move, or ``(-inf, None)`` when no move is legal.
+    """
+    pure = reward.is_pure_score
+    best_v = _NEG_INF
+    best = None
+    for a in (0, 1, 2, 3):
+        nb, gained, moved = move(b, a)
+        if not moved:
+            continue
+        val = value(nb)
+        r = gained if pure else reward.step(b, nb, gained, max_exp)[0]
+        v = r + gamma * val
+        if v > best_v:
+            best_v = v
+            best = (a, nb, val, r, gained)
+    return best_v, best
+
+
+class GreedyPolicy:
+    """Training's choice of move, with no exploration and no learning.
+
+    Stateful per game only because milestone rewards are: a bonus is paid the
+    first time a game produces a new largest tile, so the policy remembers the
+    largest one so far, exactly as training does. Call :meth:`new_game` before
+    each game, and play the move :meth:`act` returns.
+    """
+
+    def __init__(self, net, reward: RewardFunction | None = None,
+                 gamma: float = 1.0):
+        self.net = net
+        self.reward = reward or RewardFunction()
+        self.gamma = float(gamma)
+        self.max_exp = 0
+
+    def new_game(self) -> None:
+        self.max_exp = 0
+
+    def act(self, b: int) -> int:
+        """The move to play from ``b``, or -1 when there is none."""
+        _, best = best_move(b, self.max_exp, self.net.value, self.gamma,
+                            self.reward)
+        if best is None:
+            return -1
+        a, nb, _, _, gained = best
+        if not self.reward.is_pure_score:
+            self.max_exp = self.reward.step(b, nb, gained, self.max_exp)[1]
+        return a
 
 
 class TDLearner:
@@ -85,19 +157,20 @@ class TDLearner:
         self.alpha_per_weight = float(alpha) / self.net.n_variants
 
     # -- greedy policy (no learning) --------------------------------------
-    def best_action(self, b: int) -> int:
-        """The move the current value function prefers. Used for evaluation."""
-        value = self.net.value
-        gamma = self.gamma
-        best_a, best_v = -1, _NEG_INF
-        for a in (0, 1, 2, 3):
-            nb, gained, moved = _MOVE(b, a)
-            if not moved:
-                continue
-            v = gained + gamma * value(nb)
-            if v > best_v:
-                best_v, best_a = v, a
-        return best_a
+    def best_action(self, b: int, max_exp: int = 0) -> int:
+        """The move the current value function prefers from one position.
+
+        ``max_exp`` is the largest tile exponent the game has produced so far
+        (it only matters for milestone rewards). To play whole games, use
+        :meth:`policy`, which keeps track of it.
+        """
+        _, best = best_move(b, max_exp, self.net.value, self.gamma,
+                            self.reward)
+        return best[0] if best is not None else -1
+
+    def policy(self) -> GreedyPolicy:
+        """This learner's greedy policy: how it plays when it is not learning."""
+        return GreedyPolicy(self.net, self.reward, self.gamma)
 
     # -- one game ----------------------------------------------------------
     def play_game(self, rng: Random, learn: bool = True):
@@ -116,6 +189,7 @@ class TDLearner:
         eps = self.epsilon
         move = _MOVE
         spawn = _SPAWN
+        choose = best_move
 
         b = B.new_game(rng)
         score = 0
@@ -145,22 +219,11 @@ class TDLearner:
                               rf.step(b, best_after, best_gain, max_exp)[0])
                     best_v = best_r + gamma * best_val
             else:
-                for a in (0, 1, 2, 3):
-                    nb, gained, moved = move(b, a)
-                    if not moved:
-                        continue
-                    val = value(nb)
-                    if pure:
-                        r = gained
-                    else:
-                        r = rf.step(b, nb, gained, max_exp)[0]
-                    v = r + gamma * val
-                    if v > best_v:
-                        best_v = v
-                        best_after = nb
-                        best_val = val
-                        best_r = r
-                        best_gain = gained
+                # The same scorer every evaluation of this policy uses.
+                v, best = choose(b, max_exp, value, gamma, rf, move)
+                if best is not None:
+                    best_v = v
+                    _, best_after, best_val, best_r, best_gain = best
 
             # ---- terminal? -----------------------------------------------
             # No legal move exists exactly when the game is over, so this

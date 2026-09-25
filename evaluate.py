@@ -12,11 +12,16 @@ Examples (write ``python`` instead of ``python3`` on Windows):
 Every agent sees the *same* seeded games, so differences between agents are
 differences in play, not luck. Results are appended to
 ``data/<run>/evaluations.jsonl`` unless ``--no-save`` is given.
+
+A run's current weights can only be evaluated while nothing is training it:
+they would change from one game to the next. Evaluate a snapshot instead
+(``train.py --snapshot-every N`` takes them), or stop training first.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import time
@@ -24,9 +29,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from agents.learned import live_run_for                    # noqa: E402
 from agents.registry import make_agent, AGENT_NAMES        # noqa: E402
 from evaluation.evaluator import evaluate, format_report   # noqa: E402
-from training.checkpoint import Run, python_command        # noqa: E402
+from training.checkpoint import (Run, display_path,       # noqa: E402
+                                 python_command)
+from training.runlock import RunBusy, hold_frozen          # noqa: E402
 from version import version_string                         # noqa: E402
 
 
@@ -113,40 +121,58 @@ def main() -> int:
                   file=sys.stderr)
             return 2
 
+    # Hold a learned agent's current weights still for the whole run -- or
+    # refuse before playing a single game, if that run is being trained.
+    frozen = contextlib.ExitStack()
+    live = [live_run_for(args.run, args.checkpoint)] \
+        if "learned" in names else []
+    try:
+        frozen.enter_context(hold_frozen(live, purpose="evaluation, "
+                                                        "evaluate.py"))
+    except RunBusy as e:
+        print(f"error: {e}\n"
+              f"       A snapshot looks like:  {py} evaluate.py --checkpoint "
+              f"{display_path(Run(e.run).snapshot_path(50000))}",
+              file=sys.stderr)
+        return 1
+
     results = {}
-    for name in names:
-        try:
-            agent = build_agent(name, args)
-        except FileNotFoundError as e:
-            print(f"error: {e}\n"
-                  f"       Train an agent first, for example:\n"
-                  f"           {py} train.py --games 20000",
-                  file=sys.stderr)
-            return 1
+    with frozen:
+        for name in names:
+            try:
+                agent = build_agent(name, args)
+            except FileNotFoundError as e:
+                print(f"error: {e}\n"
+                      f"       Train an agent first, for example:\n"
+                      f"           {py} train.py --games 20000",
+                      file=sys.stderr)
+                return 1
 
-        # Only draw the carriage-return progress line on a real terminal;
-        # piped or redirected output would otherwise collect every update.
-        show_progress = sys.stdout.isatty() and not args.quiet
+            # Only draw the carriage-return progress line on a real terminal;
+            # piped or redirected output would otherwise collect every update.
+            show_progress = sys.stdout.isatty() and not args.quiet
 
-        def progress(done, total, _n=name):
-            if show_progress:
-                print(f"\r  {_n}: {done}/{total} games", end="", flush=True)
+            def progress(done, total, _n=name):
+                if show_progress:
+                    print(f"\r  {_n}: {done}/{total} games", end="",
+                          flush=True)
 
-        try:
-            res = evaluate(agent, games=args.games, seed=seed,
-                           progress=progress if show_progress else None)
-        except KeyboardInterrupt:
+            try:
+                res = evaluate(agent, games=args.games, seed=seed,
+                               progress=progress if show_progress else None)
+            except KeyboardInterrupt:
+                if show_progress:
+                    print("\r" + " " * 40, end="\r")
+                print("interrupted; no results written", file=sys.stderr)
+                return 130
+            finally:
+                if hasattr(agent, "close"):
+                    agent.close()
             if show_progress:
                 print("\r" + " " * 40, end="\r")
-            print("interrupted; no results written", file=sys.stderr)
-            return 130
-        if show_progress:
-            print("\r" + " " * 40, end="\r")
-        results[name] = res
-        if not args.compare:
-            print(format_report(res))
-        if hasattr(agent, "close"):
-            agent.close()
+            results[name] = res
+            if not args.compare:
+                print(format_report(res))
 
     if args.compare:
         print(f"\nsame {args.games} seeded games for every agent (seed {seed})\n")

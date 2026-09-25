@@ -180,7 +180,11 @@ player's choice, *chance* nodes average over "a 2 with probability 0.9 or a 4
 with probability 0.1, uniformly over empty cells". Its cost is bounded three
 ways — a depth limit, a probability cutoff that abandons lines rarer than a
 threshold, and a transposition table for positions reachable by several move
-orders.
+orders. The table is keyed by the position, the remaining depth *and* the
+probability of reaching it, because that probability decides where the search
+below is cut off; a value computed for a likelier line is not the value of a
+rarer one, and reusing it once made a move depend on what had been searched
+before.
 
 The probability cutoff is the interesting one: it makes the effective depth
 *adaptive for free*. A chance node with ten empty cells splits probability
@@ -311,6 +315,15 @@ evaluation per legal move, about four per turn. A state-value formulation would
 have to average over every possible tile spawn to compare two moves, which is
 both slower and noisier.
 
+`reward(a)` is the run's own configured reward — shaping, milestones and all —
+and `V` is discounted by the run's `gamma`: `V` only describes the policy that
+training followed, so that is the policy every evaluation must play. One
+scorer (`training/learner.py:best_move`) serves training, the trainer's
+periodic evaluation, experiments and the loaded `learned` agent alike, and a
+search on top of it (`--depth 2+`) scores every ply the same way. With the
+default reward (merge score, `gamma` 1) all of this is exactly
+`merge score + V(afterstate)`.
+
 The update, after the game drops its tile and the agent picks its next move
 (giving reward `r'` and afterstate `s''`):
 
@@ -370,6 +383,7 @@ checkpoints/<run>/weights.f32     memory-mapped float32 weights
 checkpoints/<run>/meta.json       games, records, RNG seed, alpha, last eval
 checkpoints/<run>/config.json     the configuration the run started with
 checkpoints/<run>/snapshots/      frozen weight copies (--snapshot-every)
+checkpoints/.locks/<run>.lock     who owns the run (see below)
 data/<run>/history.jsonl          one row per report interval, for graphs
 data/<run>/evaluations.jsonl      every fixed evaluation
 data/<run>/status.json            heartbeat the dashboard polls
@@ -395,6 +409,38 @@ discarding the file.
 Ctrl-C is not an interruption to be survived but a supported way to stop: the
 handler sets a flag, the loop finishes the current game, and the `finally`
 block checkpoints. A second Ctrl-C exits immediately.
+
+**Snapshots** have their own schedule, independent of checkpointing: one is
+taken whenever the game count reaches a multiple of `--snapshot-every`, with
+the weights holding still (between games, or with every worker stopped). A
+snapshot is written under a temporary name and renamed into place, and is
+never rewritten — not even by a run that crashed after taking it, resumed from
+an older checkpoint and passed the same game count again.
+
+### Run ownership
+
+A run belongs to one process at a time, and the operating system enforces it:
+`training/runlock.py` takes an advisory lock (`flock` on Linux and macOS,
+`LockFileEx` on Windows) on `checkpoints/.locks/<run>.lock`, held on an open
+file for as long as the process owns the run.
+
+- **Exclusive** for training (from `train.py`, the control center or an
+  experiment), for an experiment's `--fresh` reset and for deleting a run.
+  The trainer takes it before it reads or opens any of the run's files; a
+  second trainer, a deletion or a reset is refused with the holder's process
+  id and what it is doing.
+- **Shared** for a fixed evaluation of a run's *current* weights. A read-only
+  memory map still sees every update a trainer writes, so such an evaluation
+  is refused while the run is being trained (snapshots are always fine), and
+  training waits until the evaluation is done.
+
+The kernel releases a lock the moment its process exits, however it exits, so
+a crash never strands a run and there is no stale lock to clean up. Forked
+workers share their parent's lock, and every worker exits once its trainer is
+gone. The lock files sit outside the run directories so deleting a run cannot
+delete the lock protecting the deletion; each is empty apart from a short note
+naming the current holder. The control center's own checks (its job list, the
+status heartbeat) remain, but only to refuse early with a friendly message.
 
 ---
 
@@ -430,6 +476,28 @@ Only *results* go over a queue, batched 16 games at a time — per-game IPC woul
 cost more than a game does. The parent never plays, so it stays responsive to
 Ctrl-C and can checkpoint on schedule.
 
+**Boundaries.** Evaluations and snapshots need the weights to hold still, so
+training runs in *segments* that end exactly at the next evaluation or
+snapshot: worker `w` of `n` plays indices `start + w`, `start + w + n`, … up
+to the boundary, reports and exits; the evaluation or snapshot then runs with
+no writer alive; a fresh set of workers continues from the very next index.
+Checkpoints need no boundary and still happen as results arrive.
+
+**Every game index exactly once.** A worker *claims* each index, under a lock
+shared with the parent, before playing it. On Ctrl-C the parent draws a stop
+line just past the highest claimed index: games in flight finish, a worker
+that is behind catches up to the line, and nobody crosses it. The run stops
+with exactly the games `[0, line)` played, so `--resume` never repeats or
+skips one.
+
+**Failures are loud.** A worker that raises sends its traceback before it
+exits; one that dies outright (a crash, the OOM killer) is found by its exit
+code. Either way the other workers are stopped, terminated or killed if they
+must be, and joined; the checkpoint is saved; and training fails with a
+one-line reason — so `train.py` exits non-zero and a control-center job is
+`FAILED` rather than `COMPLETED`. A worker also exits by itself as soon as it
+notices its trainer has gone.
+
 **Start methods.** Linux uses `fork`: the worker inherits the parent's already
 built move tables and open mapping, so it starts instantly and costs no extra
 memory. Windows has no `fork`, and on macOS forking is unsafe once system
@@ -444,9 +512,9 @@ guarded with `if __name__ == "__main__":`.
 
 **Determinism.** Each game's tile spawns come from `Random(game_seed(seed, i))`,
 so with one worker a run is bit-for-bit reproducible and resuming continues the
-same sequence. With several workers the games are still seeded, but weight
-updates interleave between processes, so reruns are statistically rather than
-literally identical. That is the price of Hogwild, and it is stated rather than
+same sequence. With several workers the games are still seeded and each is
+played exactly once, but weight updates interleave between processes, so
+reruns are statistically rather than literally identical. That is the price of Hogwild, and it is stated rather than
 hidden.
 
 ---
@@ -543,12 +611,15 @@ non-zero *because* it was interrupted is recorded as `CANCELLED`, not
 
 **Conflicting work is refused, not raced.** Two training processes writing one
 weight file would interleave their updates and corrupt the run's accounting.
-Each job declares an *exclusive key* — for training, the run name — and a
-second job with a live key is rejected with a 409 that names the job already
-holding it. A trainer the server did not launch (one started with `train.py`
-in a terminal, or left running by a server that was killed outright) is
-detected from the run's status heartbeat and refused the same way; the Stop
-button sends it SIGINT, which is exactly Ctrl-C.
+The guarantee is the run lock (see *Run ownership*), which every trainer,
+experiment and deletion takes, whoever started it. On top of that, each job
+declares an *exclusive key* — for training and training experiments, the run
+name — so a second job with a live key is rejected at once with a 409 that
+names the job already holding it, and a run held by any other process is
+refused the same way before anything is launched. A trainer the server did
+not launch (one started with `train.py` in a terminal, or left running by a
+server that was killed outright) can still be stopped: the Stop button sends
+it SIGINT, which is exactly Ctrl-C.
 
 **Stopping the server stops its jobs, however it is stopped.** Children run
 in their own process group or session so that stopping one job cannot
@@ -573,7 +644,8 @@ The browser opens an `EventSource` on `/api/stream`, and the server pushes a
 status frame every second plus any new log events. Server-Sent Events need no
 dependency, reconnect on their own, and are a better fit than websockets for a
 one-way feed. Polling is the fallback when `EventSource` is unavailable or the
-stream drops, and `?live=poll` forces it.
+stream drops, and `?live=poll` forces it. The fallback runs one loop at most,
+and stops as soon as the stream reconnects or delivers a status frame.
 
 ### Game sessions
 
@@ -583,14 +655,19 @@ JavaScript would eventually disagree with the first, and then "the AI scored
 more than you" would be measuring the difference between two rule sets.
 
 An AI session is a throttled worker thread that stays ~48 frames ahead of what
-the browser has consumed — that buffer *is* the throttle, which is why slow
+the browser is *displaying* — each poll reports the playback cursor alongside
+the frames it fetches, and that buffer *is* the throttle, which is why slow
 playback costs almost no CPU. It supports pause, resume and single-step. A
-human session holds no thread at all: the browser posts a direction and gets
-the new board back.
+session nobody has looked at for fifteen minutes is collected by a background
+sweep, which stops its thread and closes its agent. A human session holds no
+thread at all: the browser posts a direction and gets the new board back.
 
 The viewer opens the weights through a **read-only** memory map, and the
 control center never talks to the trainer — it reads the files the trainer
-writes. So nothing a browser does can disturb a run in progress.
+writes. So nothing a browser does can disturb a run in progress. (Watching a
+run while it trains is fine, since a viewer is not a measurement; a fixed
+evaluation of the same weights is refused, as described under *Run
+ownership*.)
 
 Liveness detection: the trainer heartbeats `status.json` every three seconds; a
 status older than fifteen seconds, or one whose PID no longer exists, is
@@ -627,12 +704,13 @@ privileged local controls rather than a read-only dashboard:
 | `agents/learned.py` | read-only wrapper around a trained network |
 | `agents/registry.py` | `make_agent(name, **kw)` used by every entry point |
 | `training/ntuple.py` | the network: tuples, symmetries, index tables, mmap, codegen |
-| `training/learner.py` | TD(0) afterstate learning; the innermost loop |
+| `training/learner.py` | TD(0) afterstate learning; the innermost loop; the one move scorer every evaluation of the policy uses |
 | `training/reward.py` | reward functions and their failure modes |
 | `training/stats.py` | rolling window, all-time aggregates, history file |
 | `training/checkpoint.py` | run directories, atomic writes, resume |
+| `training/runlock.py` | which process owns a run: OS file locks, exclusive or shared |
 | `training/config.py` | layered configuration (defaults → file → CLI) |
-| `training/trainer.py` | the loop, reporting, checkpoint scheduling, workers |
+| `training/trainer.py` | the loop, reporting, checkpoint and snapshot scheduling, workers and their boundaries |
 | `evaluation/evaluator.py` | fixed seeded evaluation and its statistics |
 | `experiments/runner.py` | run a config, evaluate, store config + result |
 | `dashboard/server.py` | HTTP transport: routing, static files, SSE, request guards |

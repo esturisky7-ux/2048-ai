@@ -190,6 +190,8 @@ const App = {
   listeners: new Set(),
   _es: null,
   _pollTimer: null,
+  _polling: false,
+  _pollGen: 0,
   _lastJobStates: new Map(),
 
   /* -- status distribution ------------------------------------------- */
@@ -267,8 +269,13 @@ const App = {
     if (window.EventSource && !forcePoll) {
       try {
         const es = new EventSource(`/api/stream?run=${encodeURIComponent(this.run)}`);
+        // The stream is (back) up: the fallback poll has done its job.
+        es.onopen = () => { if (this._es === es) this.stopPolling(); };
         es.addEventListener("status", (e) => {
-          try { this.setStatus(JSON.parse(e.data)); } catch (_) { }
+          let status;
+          try { status = JSON.parse(e.data); } catch (_) { return; }
+          if (this._es === es && status && !status.error) this.stopPolling();
+          this.setStatus(status);
         });
         es.addEventListener("events", (e) => {
           try {
@@ -278,9 +285,11 @@ const App = {
           } catch (_) { }
         });
         es.onerror = () => {
-          // Browser retries on its own; keep a poll going so the UI is never
-          // frozen while it does.
-          if (!this._pollTimer) this.startPolling();
+          // Either the browser is retrying on its own (and onopen will stop
+          // the poll once it succeeds) or it has given up for good, say on a
+          // 503; both ways, poll so the UI is never frozen. startPolling()
+          // runs one loop at most however often this fires.
+          if (this._es === es) this.startPolling();
         };
         this._es = es;
         return;
@@ -289,18 +298,33 @@ const App = {
     this.startPolling();
   },
 
+  /* One polling loop at most. Each loop carries the generation it was started
+   * in, and stopPolling() moves the generation on, so a tick that was already
+   * waiting on the network when polling stopped cannot schedule another. */
   startPolling() {
+    if (this._polling) return;
+    this._polling = true;
+    const gen = ++this._pollGen;
     const tick = async () => {
-      try { this.setStatus(await API.get("/api/status", { run: this.run })); }
+      let status = null;
+      try { status = await API.get("/api/status", { run: this.run }); }
       catch (_) { }
+      if (gen !== this._pollGen) return;
+      if (status) this.setStatus(status);
       this._pollTimer = setTimeout(tick, this.settings.refresh_ms);
     };
     tick();
   },
 
+  stopPolling() {
+    this._pollGen++;
+    this._polling = false;
+    if (this._pollTimer) { clearTimeout(this._pollTimer); this._pollTimer = null; }
+  },
+
   stopLive() {
     if (this._es) { this._es.close(); this._es = null; }
-    if (this._pollTimer) { clearTimeout(this._pollTimer); this._pollTimer = null; }
+    this.stopPolling();
   },
 
   async refreshNow() {
