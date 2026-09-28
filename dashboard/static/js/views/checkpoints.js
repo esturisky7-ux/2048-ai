@@ -6,43 +6,38 @@ App.views.checkpoints = {
 
   mount(root) {
     this.root = root;
-    this.panel = el("section", { class: "panel" });
+    this.panel = card();
     root.append(
       this.panel,
-      el("section", { class: "panel" },
-        el("div", { class: "panel-head" }, el("h3", {}, "About checkpoints")),
-        el("div", { class: "dim", style: "font-size:13.5px;max-width:75ch" },
+      card(cardHeader("About Checkpoints"),
+        cardContent(prose(
           "A checkpoint is the agent itself: a flat array of float32 weights " +
           "plus the metadata describing the run that produced it. Snapshots " +
           "are frozen copies taken during training, which let you measure an " +
           "agent against its own younger self on identical games. Checkpoints " +
           "are never committed to Git — the default network is 268 MB — so to " +
-          "share one, attach the file to a GitHub Release.")));
+          "share one, attach the file to a GitHub Release."))));
     this.load();
   },
 
   async load() {
-    this.panel.innerHTML = "";
-    this.panel.append(el("div", { class: "panel-head" },
-      el("h3", {}, "Saved checkpoints"),
-      el("span", { class: "note skeleton" }, "loading")));
+    if (!this.panel.firstChild) {
+      fillCard(this.panel, { title: "Saved Checkpoints", action: el("span",
+        { class: "badge badge-outline skeleton", style: "width:56px" }, "loading") },
+        el("div", { class: "skeleton", style: "height:120px" }));
+    }
     let data;
     try { data = await API.get("/api/checkpoints"); }
     catch (e) {
-      this.panel.innerHTML = "";
-      this.panel.append(el("div", { class: "faint" }, `Could not load: ${e.message}`));
+      fillCard(this.panel, { title: "Saved Checkpoints" },
+        el("div", { class: "note" }, `Could not load: ${e.message}`));
       return;
     }
     const items = data.checkpoints || [];
-    this.panel.innerHTML = "";
     if (!items.length) {
-      const go = el("button", { class: "btn btn-primary" }, "Start training");
-      go.onclick = () => App.go("training");
-      this.panel.append(el("div", { class: "empty" },
-        el("div", { class: "big" }, "▤"),
-        el("h3", {}, "No checkpoints yet"),
-        el("div", {}, "Train an agent and it will appear here."),
-        el("div", { class: "btn-row", style: "justify-content:center;margin-top:16px" }, go)));
+      fillCard(this.panel, {},
+        emptyState("database", "No Checkpoints Yet", "Train an agent and it will appear here.",
+          button("Start Training", { icon: "play", onClick: () => App.go("training") })));
       return;
     }
 
@@ -54,33 +49,32 @@ App.views.checkpoints = {
       if (m && (!best || m > best.eval.mean_score)) best = c;
     }
 
-    this.panel.append(el("div", { class: "panel-head" },
-      el("h3", {}, "Saved checkpoints"),
-      el("span", { class: "note" }, `${items.length} total`)));
-
-    const rows = items.map((c) => this.row(c, best));
-    this.panel.append(el("div", { class: "table-wrap" },
-      el("table", { class: "data" },
-        el("thead", {}, el("tr", {},
-          el("th", {}, "Checkpoint"), el("th", { class: "num" }, "Games"),
-          el("th", { class: "num" }, "Evaluation"), el("th", { class: "num" }, "Best tile"),
-          el("th", { class: "num" }, "Size"), el("th", {}, "Saved"),
-          el("th", {}, "Actions"))),
-        el("tbody", {}, ...rows))));
+    fillCard(this.panel, {
+      title: "Saved Checkpoints",
+      description: best ? "The starred checkpoint has the best evaluation score."
+        : "Evaluate a checkpoint to see how strong it is.",
+      action: badge(`${items.length} total`, "outline"),
+    },
+    table(["Checkpoint", ["Games", { num: true }], ["Evaluation", { num: true }],
+           ["Best tile", { num: true }], ["Size", { num: true }], "Saved",
+           ["Actions", { num: true }]],
+      items.map((c) => this.row(c, best))));
   },
 
   row(c, best) {
     const isBest = best && best.id === c.id;
-    const label = el("span", {}, c.label || (c.kind === "current" ? c.run : "snapshot"));
     const nameCell = el("td", {},
-      el("div", { style: "display:flex;align-items:center;gap:7px;flex-wrap:wrap" },
-        isBest ? el("span", { title: "Best evaluated checkpoint", style: "color:var(--accent)" }, "★") : null,
-        label,
-        el("span", { class: "tag" }, c.kind === "current" ? "current" : "snapshot"),
-        c.tuple_set ? el("span", { class: "tag" }, c.tuple_set) : null),
-      el("div", { class: "faint mono", style: "font-size:11px" }, c.id));
+      el("div", { class: "cell-stack" },
+        el("div", { class: "inline inline-6" },
+          isBest ? el("span", { title: "Best evaluated checkpoint", style: "display:inline-flex" },
+            icon("star", 14)) : null,
+          el("span", { style: "font-weight:500" },
+            c.label || (c.kind === "current" ? c.run : "snapshot")),
+          badge(c.kind === "current" ? "current" : "snapshot", "outline"),
+          c.tuple_set ? badge(c.tuple_set, "outline") : null),
+        el("div", { class: "cell-sub mono" }, c.id)));
 
-    const watch = el("button", { class: "btn btn-sm" }, "Watch");
+    const watch = button("Watch", { variant: "outline", size: "sm" });
     watch.onclick = () => {
       App.setRun(c.run);
       // A snapshot travels in the route, so the Play page can select it;
@@ -88,7 +82,7 @@ App.views.checkpoints = {
       App.go(c.kind === "snapshot"
         ? `play/watch/${encodeURIComponent(c.id)}` : "play/watch");
     };
-    const evaluate = el("button", { class: "btn btn-sm" }, "Evaluate");
+    const evaluate = button("Evaluate", { variant: "outline", size: "sm" });
     evaluate.onclick = async () => {
       evaluate.disabled = true;
       try {
@@ -101,18 +95,21 @@ App.views.checkpoints = {
       } catch (e) { Toast.error("Could not evaluate", e.message); }
       finally { evaluate.disabled = false; }
     };
-    const resume = el("button", { class: "btn btn-sm" }, "Resume");
-    resume.onclick = () => { App.setRun(c.run); App.go("training"); };
-    const rename = el("button", { class: "btn btn-sm btn-ghost", title: "Label" }, "Label");
+    const resume = button("Resume", { variant: "outline", size: "sm",
+      onClick: () => { App.setRun(c.run); App.go("training"); } });
+    const rename = button("Label", { variant: "ghost", size: "sm", title: "Give it a label" });
     rename.onclick = async () => {
-      const value = prompt(`Label for ${c.id}`, c.label || "");
+      const value = await promptDialog("Label this checkpoint",
+        `A short name for ${c.id}, shown in place of its id. Leave empty to remove it.`,
+        c.label || "", { placeholder: "e.g. before-alpha-change" });
       if (value === null) return;
       try {
         await API.post("/api/checkpoints/label", { id: c.id, label: value.trim() });
         this.load();
       } catch (e) { Toast.error("Could not save the label", e.message); }
     };
-    const del = el("button", { class: "btn btn-sm btn-danger" }, "Delete");
+    const del = button("Delete", { variant: "ghost", size: "icon-sm", icon: "trash-2",
+                                   title: `Delete ${c.id}` });
     del.onclick = async () => {
       const what = c.kind === "current"
         ? `the entire run “${c.run}” — its weights, history and every snapshot`
@@ -134,18 +131,17 @@ App.views.checkpoints = {
     const evalCell = c.eval?.mean_score
       ? el("td", { class: "num" },
           el("div", {}, F.n(c.eval.mean_score, 0)),
-          el("div", { class: "faint", style: "font-size:11px" },
-            `n=${F.n(c.eval.games)}`))
-      : el("td", { class: "num faint" }, "—");
+          el("div", { class: "cell-sub" }, `n=${F.n(c.eval.games)}`))
+      : el("td", { class: "num muted" }, "—");
 
     return el("tr", {},
       nameCell,
       el("td", { class: "num" }, F.compact(c.games)),
       evalCell,
       el("td", { class: "num" }, c.best_tile ? F.n(c.best_tile) : "—"),
-      el("td", { class: "num faint" }, F.bytes(c.size_bytes)),
-      el("td", { class: "faint nowrap" }, c.saved_at ? F.ago(c.saved_at) : "—"),
-      el("td", {}, el("div", { class: "btn-row" },
+      el("td", { class: "num muted" }, F.bytes(c.size_bytes)),
+      el("td", { class: "muted" }, c.saved_at ? F.ago(c.saved_at) : "—"),
+      el("td", {}, el("div", { class: "inline inline-6", style: "justify-content:flex-end;flex-wrap:nowrap" },
         watch, evaluate, c.kind === "current" ? resume : null, rename, del)));
   },
 };

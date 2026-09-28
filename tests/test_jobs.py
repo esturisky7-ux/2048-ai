@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -71,6 +72,34 @@ class TestLifecycle(JobManagerTest):
         self.assertEqual(job.state, J.FAILED)
         self.assertTrue(job.error)
         self.assertIn("boom", "\n".join(job.tail()))
+
+    def test_a_job_never_looks_finished_before_its_error_is_set(self):
+        """The reaper thread settles jobs while the API reads them unlocked.
+
+        Whoever sees FAILED must also see why: the state is published only
+        after the error and result. (CI once caught a reader in between.)"""
+        seen = []                 # the job's state while each is read
+        read_log, read_result = J.Job.tail, J.JobManager._read_result
+
+        def tail(job, lines=200):
+            seen.append(job.state)
+            return read_log(job, lines)
+
+        def result(job):
+            seen.append(job.state)
+            return read_result(job)
+
+        with mock.patch.object(J.Job, "tail", tail), \
+                mock.patch.object(J.JobManager, "_read_result",
+                                  staticmethod(result)):
+            job = self.mgr.submit("test", "raises",
+                                  self.python("raise SystemExit('boom')"))
+            self.assertTrue(wait_until(
+                lambda: job.state in J.TERMINAL_STATES))
+        self.assertEqual(job.state, J.FAILED)
+        self.assertIn("boom", job.error)
+        self.assertTrue(seen)
+        self.assertFalse([s for s in seen if s in J.TERMINAL_STATES], seen)
 
     def test_unlaunchable_command_fails_cleanly(self):
         with self.assertRaises(OSError):

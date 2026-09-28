@@ -18,7 +18,7 @@ guides for installation, training, evaluation, the control center and troublesho
 
 </div>
 
-![The 2048 AI Control Center showing a live training run: status, records, achievement rates and six interactive charts](docs/images/control-center.png)
+![The 2048 AI Control Center showing a live training run: status, the current run, records, achievement rates and the training-progress chart](docs/images/control-center.png)
 
 <p align="center"><sub>The control center during a live two-worker training run — every number on this page is read from the running system.</sub></p>
 
@@ -439,7 +439,7 @@ use.
 
 | Page | What you do there |
 |---|---|
-| **Overview** | Live status, the current run, records, achievement rates, and seven interactive charts. Hover any chart for the exact value and the game number it came from. |
+| **Overview** | Live status, the current run, records, achievement rates, and a training-progress chart with seven views — score, tile rates, evaluation, evaluation tile rates, highest tile, speed and games — picked with a switcher that remembers your choice. Hover any chart (or tab to it and use the arrow keys) for the exact value and the game number it came from. |
 | **Training** | Start a new run with sensible defaults (basic and advanced settings), or continue an existing one — "train 10,000 more", a custom amount, or continuously. Live throughput, ETA, and a **graceful stop** that finishes the current game and writes a checkpoint. |
 | **Play** | Watch any agent play, with pause, single-step, restart and speeds from 0.25× to maximum. Play 2048 yourself with the arrow keys, WASD, swipe or on-screen buttons. Or take the AI on in **You vs AI**. |
 | **Evaluate** | Run a fixed-seed evaluation on any agent or saved checkpoint, watch its progress, and get the mean with a 95% confidence interval, percentiles and Wilson intervals for every tile rate. Export JSON or CSV. |
@@ -469,10 +469,21 @@ detail.
 is `http.server`; the front end is hand-written HTML, CSS and JavaScript that
 loads nothing from a CDN.
 
+**The interface.** A light and a dark theme (the sun/moon button in the header,
+or *Match the system* in Settings), a sidebar that collapses to an icon rail
+(its button, or **Ctrl+B** / **⌘B**) and becomes a slide-over menu on phones,
+and cards that stack on narrow windows. The look is one stylesheet,
+`dashboard/static/css/app.css`, built on CSS custom properties. The Geist and
+Geist Mono typefaces ship in `dashboard/static/fonts/` (SIL Open Font License)
+and the few [Lucide](https://lucide.dev) icons are inlined in
+`dashboard/static/js/icons.js` (ISC License), so the page still works with no
+network at all.
+
 ### Keyboard shortcuts
 
-`g` then `o`/`t`/`p`/`e`/`c`/`k`/`l`/`s` jumps between pages, arrow keys or
-WASD play a human game, `Space` pauses a watched game, and `?` lists them all.
+`g` then `o`/`t`/`p`/`e`/`c`/`x`/`b`/`k`/`l`/`s` jumps between pages, arrow
+keys or WASD play a human game, `Space` pauses a watched game, `Ctrl+B` (`⌘B`
+on macOS) collapses the sidebar, and `?` lists them all.
 
 ---
 
@@ -492,7 +503,7 @@ WASD play a human game, `Space` pauses a watched game, and `?` lists them all.
 | **Supervised jobs** | Training and evaluation run as subprocesses with real state, progress and a graceful stop. |
 | **Play it yourself** | Human play and You-vs-AI, on the same Python engine the AI uses. |
 | **Localhost-only** | Binds to 127.0.0.1, refuses cross-origin requests, never takes a filesystem path from the browser. |
-| **Tested** | 337 tests, run on Linux, Windows and macOS by CI. |
+| **Tested** | 340 tests, run on Linux, Windows and macOS by CI. |
 
 ---
 
@@ -694,7 +705,7 @@ evaluation/   the fixed, seeded evaluation procedure and its statistics
 experiments/  runs a config, evaluates it, stores config+result together
 dashboard/    stdlib HTTP server, JSON API, static front end, live game thread
 config/       default.json plus 18 experiment configs
-tests/        337 tests: unit, integration, API, end-to-end, plus a benchmark
+tests/        340 tests: unit, integration, API, end-to-end, plus a benchmark
 docs/         architecture and command reference
 ```
 
@@ -855,7 +866,7 @@ evaluation of the current weights runs, training that run waits for it.
 ## Watching the AI play
 
 **Play ▸ Watch the AI** in the control center. Pick an agent, press **Start
-game**, and watch it move.
+Game**, and watch it move.
 
 ![Watching the trained agent, with score, move count, max tile and per-move decision time](docs/images/play.png)
 
@@ -866,7 +877,7 @@ game**, and watch it move.
 | Checkpoint | Play with a frozen snapshot instead of the current weights |
 | Speed | 0.25×, 0.5×, 1×, 2×, 5×, 10× or maximum |
 | Pause / Step / Restart / Stop | Including single-stepping one move at a time |
-| **Watch current AI** | One click: load the latest checkpoint and go |
+| **Watch Current AI** | One click: load the latest checkpoint and go |
 
 The game is played by the server in a throttled background thread that stays
 only a few dozen moves ahead of what your browser is showing, so slow
@@ -889,7 +900,7 @@ http://127.0.0.1:8000/?watch=learned&depth=1&speed=5&seed=1#/play/watch
 
 ### Play it yourself
 
-**Play ▸ Play yourself** gives you the board, with arrow keys, WASD, swipe or
+**Play ▸ Play Yourself** gives you the board, with arrow keys, WASD, swipe or
 on-screen buttons. **You vs AI** lets you play a seeded game and then watches
 the trained agent play the same one.
 
@@ -965,7 +976,7 @@ python3 tests/benchmark_engine.py                # throughput benchmark
 
 On Windows use `py -m unittest discover -s tests`.
 
-**337 tests.** What they actually check:
+**340 tests.** What they actually check:
 
 - **`test_engine.py`** — merge rules including the awkward cases (`2 2 2 2` →
   `4 4 . .`, `4 4 8 8` → `8 16 . .`), that a freshly merged tile cannot merge
@@ -996,8 +1007,9 @@ On Windows use `py -m unittest discover -s tests`.
   control center.
 - **`test_jobs.py`** — the job manager: jobs reach the right terminal state, a
   **stopped job gets to save before it exits**, an unresponsive child is
-  escalated rather than hanging shutdown, two jobs cannot work on one run, and
-  finished jobs are trimmed while live ones are not.
+  escalated rather than hanging shutdown, two jobs cannot work on one run,
+  finished jobs are trimmed while live ones are not, and a failed job is never
+  visible as finished before its error is recorded.
 - **`test_api.py`** — every route; run names that are not safe path components;
   numeric ranges; agent allowlists; **checkpoint identifiers that try to become
   file paths**; game sessions and their controls; settings clamping. Its
@@ -1005,8 +1017,9 @@ On Windows use `py -m unittest discover -s tests`.
   training against a real checkpoint directory.
 - **`test_server.py`** — the HTTP boundary over a real socket: path traversal,
   the CSRF header, cross-origin rejection, hardening headers, no CORS, mutating
-  routes unreachable by GET, oversized and malformed bodies, and the event
-  stream.
+  routes unreachable by GET, oversized and malformed bodies, the event
+  stream, and that the page's scripts, stylesheet and bundled fonts are all
+  served locally — nothing is loaded from another origin.
 - **`test_control_center.py`** — the whole product, start to finish: start the
   server, train, watch progress update, stop gracefully, resume, evaluate,
   watch the agent play, play a human game, read the statistics, list
@@ -1297,13 +1310,18 @@ Known differences that are documented rather than papered over:
 │   ├── store.py               checkpoint ids, saved results, UI settings
 │   ├── sysinfo.py             platform diagnostics, degrading gracefully
 │   ├── events.py              the event log behind the Logs page
-│   └── static/                HTML, CSS and JS — no CDN, no framework, no build
+│   └── static/                the front end — no CDN, no framework, no build
+│       ├── index.html         the shell: sidebar, header, content area
+│       ├── css/app.css        the whole design system: tokens, components, layout
+│       ├── js/                core (API, live updates, routing), ui components,
+│       │                      charts, icons, and one file per page in views/
+│       └── fonts/             Geist and Geist Mono (SIL Open Font License)
 │
 ├── config/
 │   ├── default.json           the default configuration
 │   └── experiments/           18 experiment configs
 │
-├── tests/                     337 tests + the engine benchmark
+├── tests/                     340 tests + the engine benchmark
 ├── docs/
 │   ├── ARCHITECTURE.md        how the pieces fit together, and why
 │   ├── COMMANDS.md            command reference, with Windows equivalents

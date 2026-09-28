@@ -62,15 +62,30 @@ all three on every push. Things to watch for:
 
 The `TestPortability` class in `tests/test_infra.py` covers several of these.
 
+**The front end stays hand-written.** `dashboard/static/` is plain HTML, CSS and
+JavaScript with no framework, no bundler and nothing loaded from another
+origin (the server's Content-Security-Policy would block it anyway). When you
+change a page:
+
+- Build it from the components in `js/ui.js` (`card`, `statTile`, `field`,
+  `button`, `badge`, `table`, …) rather than new one-off markup, and style it in
+  `css/app.css`.
+- Use the colour tokens (`var(--foreground)`, `var(--muted-foreground)`,
+  `var(--chart-1)` … `var(--chart-5)` and friends) instead of literal colours,
+  so both themes keep working.
+- Check it in the light and the dark theme, and at a phone-sized width.
+- Need an icon? Copy its Lucide paths into `js/icons.js`; do not load an icon
+  font or library.
+
 ## Running the tests
 
 ```bash
-python3 -m unittest discover -s tests          # everything, ~70 s
+python3 -m unittest discover -s tests          # everything, ~90 s
 python3 -m unittest tests.test_engine          # one module
 python3 tests/benchmark_engine.py              # throughput benchmark
 ```
 
-All 142 must pass before a pull request is ready. The end-to-end module drives
+All 340 must pass before a pull request is ready. The end-to-end module drives
 the real command-line entry points as subprocesses, so it is slower than the
 rest and worth running last.
 

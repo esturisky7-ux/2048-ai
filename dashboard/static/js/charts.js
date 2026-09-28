@@ -1,35 +1,68 @@
-/* Canvas charts with hover read-out.
+/* Canvas line charts with a hover read-out.
  *
- * Evolved from the original dashboard renderer, with the interaction the
- * control center needs: moving the pointer over a chart snaps to the nearest
- * sample and reports the real value and the training game number it came from.
- * No charting library, no dependency, ~300 lines.
+ * Moving the pointer over a chart snaps to the nearest sample and reports the
+ * real value and the training game number it came from; arrow keys do the
+ * same for keyboard users. Colours come from the theme's CSS custom
+ * properties (series name them as "var(--chart-2)"), so the same chart
+ * redraws correctly in either theme. No charting library, no dependency.
  */
 
-const css = (v) =>
-  getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-
-const SERIES_COLORS = {
-  mean: "#edc22e", median: "#5ac8fa", eval: "#3ddc84", tile: "#edc22e",
-  r512: "#9aa3b2", r1024: "#5ac8fa", r2048: "#edc22e", r4096: "#ff9f43",
-  r8192: "#a78bfa", speed: "#5ac8fa", games: "#3ddc84",
-};
-
-function axisLabel(v, unit) {
-  if (unit === "games") {
-    if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
-    if (v >= 1000) return (v / 1000).toFixed(v >= 10000 ? 0 : 1) + "k";
-    return String(Math.round(v));
-  }
-  if (unit === "hours") return v.toFixed(v < 10 ? 1 : 0) + "h";
-  return F.n(Math.round(v));
+/* A theme token, resolved to a colour string the canvas understands. */
+function themeColor(value) {
+  const m = /^var\((--[\w-]+)\)$/.exec(String(value || "").trim());
+  if (!m) return value;
+  return getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim();
 }
 
-function valueLabel(v, opts) {
+/* Series colours by meaning, from the chart ramp (--chart-1 … --chart-5). */
+const SERIES_COLORS = {
+  mean: "var(--chart-2)", median: "var(--chart-4)",
+  eval: "var(--chart-4)", evalBand: "var(--chart-1)",
+  tile: "var(--chart-3)",
+  r512: "var(--chart-1)", r1024: "var(--chart-2)", r2048: "var(--chart-3)",
+  r4096: "var(--chart-4)", r8192: "var(--chart-5)",
+  games: "var(--chart-2)", speed: "var(--chart-4)", cumulative: "var(--chart-3)",
+};
+
+/* n colours spread evenly over the ramp: three series get 1, 3 and 5. */
+function spreadColors(n) {
+  if (n <= 1) return ["var(--chart-3)"];
+  return Array.from({ length: n }, (_, i) =>
+    `var(--chart-${n > 5 ? (i % 5) + 1 : Math.round(1 + (i * 4) / (n - 1))})`);
+}
+
+function compactNumber(v) {
+  const a = Math.abs(v);
+  if (a >= 1e6) return (v / 1e6).toFixed(a >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M";
+  if (a >= 1e4) return Math.round(v / 1e3) + "k";
+  if (a >= 1e3) return (v / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+  if (a >= 10 || v === 0) return String(Math.round(v));
+  return v.toFixed(1);
+}
+
+function axisLabel(v, unit) {
+  if (unit === "hours") {
+    if (v < 1) return `${Math.round(v * 60)}m`;
+    return (v < 10 ? v.toFixed(1).replace(/\.0$/, "") : Math.round(v)) + "h";
+  }
+  return compactNumber(v);
+}
+
+function valueLabel(v, opts, full = false) {
   if (opts.tileScale) return v >= 1 ? F.n(Math.pow(2, Math.round(v))) : "0";
   if (opts.percent) return v.toFixed(v < 10 ? 1 : 0) + "%";
-  if (v >= 10000) return (v / 1000).toFixed(0) + "k";
-  return F.n(Math.round(v));
+  if (full) return Math.abs(v) >= 100 ? F.n(Math.round(v)) : F.n(v, v % 1 ? 2 : 0);
+  return compactNumber(v);
+}
+
+/* A round step at or above v, so an axis reads 0 / 6k / 12k / 18k … */
+function niceStep(v) {
+  if (!(v > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 3, 4, 5, 6, 8, 10]) {
+    if (m * p >= v * 0.999) return m * p;
+  }
+  return 10 * p;
 }
 
 /* A chart instance keeps its geometry so hover can map pixels back to data. */
@@ -47,46 +80,58 @@ class Chart {
   update(series, opts) {
     this.series = series;
     if (opts) this.opts = { ...this.opts, ...opts };
+    this.hover = null;
+    this.tip.classList.remove("show");
     this.draw();
   }
 
+  static redrawAll() {
+    $$(".chart").forEach((node) => node._chart && node._chart.draw());
+  }
+
   _bind() {
-    if (this.canvas._chartBound) return;
-    this.canvas._chartBound = true;
-    const box = this.canvas.closest(".chart-box") || this.canvas.parentElement;
-    let tip = box.querySelector(".chart-tip");
-    if (!tip) {
-      tip = el("div", { class: "chart-tip" });
-      box.style.position = "relative";
-      box.append(tip);
-    }
-    this.tip = tip;
+    const box = this.canvas.parentElement;
+    this.tip = el("div", { class: "chart-tip", "aria-hidden": "true" });
+    box.append(this.tip);
 
     const move = (clientX, clientY) => {
       const rect = this.canvas.getBoundingClientRect();
-      this._onHover(clientX - rect.left, clientY - rect.top, rect);
+      this._onHover(clientX - rect.left, clientY - rect.top);
     };
     this.canvas.addEventListener("pointermove", (e) => move(e.clientX, e.clientY));
-    this.canvas.addEventListener("pointerleave", () => {
-      this.hover = null;
-      this.tip.classList.remove("show");
-      this.draw();
-    });
+    this.canvas.addEventListener("pointerleave", () => this._clearHover());
+    this.canvas.addEventListener("blur", () => this._clearHover());
     // Keyboard users get the same read-out by tabbing to the canvas.
     this.canvas.tabIndex = 0;
     this.canvas.addEventListener("keydown", (e) => {
       if (!this.geom) return;
       const n = this.geom.count;
       if (!n) return;
-      let i = this.hover === null ? 0 : this.hover;
+      let i = this.hover === null ? n - 1 : this.hover;
       if (e.key === "ArrowRight") i = Math.min(n - 1, i + 1);
       else if (e.key === "ArrowLeft") i = Math.max(0, i - 1);
       else return;
       e.preventDefault();
       this.hover = i;
       this.draw();
-      this._showTip(this.geom.X(this.geom.xs[i]), 20);
+      this._showTip(this.geom.X(this.geom.xs[i]), 24);
     });
+    // Redraw whenever the canvas changes size: window resizes, the sidebar
+    // collapsing, a card reflowing.
+    if (window.ResizeObserver) {
+      let frame = 0;
+      new ResizeObserver(() => {
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => this.draw());
+      }).observe(this.canvas);
+    }
+  }
+
+  _clearHover() {
+    if (this.hover === null) return;
+    this.hover = null;
+    this.tip.classList.remove("show");
+    this.draw();
   }
 
   _onHover(px, py) {
@@ -97,12 +142,7 @@ class Chart {
       const d = Math.abs(X(xs[i]) - px);
       if (d < bestD) { bestD = d; best = i; }
     }
-    if (bestD > 40) {
-      this.hover = null;
-      this.tip.classList.remove("show");
-      this.draw();
-      return;
-    }
+    if (bestD > 40) { this._clearHover(); return; }
     this.hover = best;
     this.draw();
     this._showTip(X(xs[best]), py);
@@ -112,25 +152,31 @@ class Chart {
     const i = this.hover;
     if (i === null || !this.geom) return;
     const { xs } = this.geom;
-    const rows = [el("div", { class: "row" },
-      el("span", { class: "k" }, this.opts.xLabel || "games"),
-      el("b", {}, F.n(xs[i])))];
-    for (const s of this.series) {
+    const xv = xs[i];
+    const rows = [el("div", { class: "tip-head" },
+      `${this.opts.xLabel || "games"} ${this.opts.xUnit === "hours"
+        ? axisLabel(xv, "hours") : F.n(xv)}`)];
+    for (const s of this.geom.lines) {
       if (!s.y || s.y[i] === undefined || s.y[i] === null) continue;
       rows.push(el("div", { class: "row" },
-        el("span", { class: "sw", style: `background:${s.color}` }),
+        el("span", { class: "swatch", style: `background:${s.color}` }),
         el("span", { class: "k" }, s.label || ""),
-        el("b", {}, s.format ? s.format(s.y[i]) : valueLabel(s.y[i], this.opts))));
+        el("b", {}, s.format ? s.format(s.y[i]) : valueLabel(s.y[i], this.opts, true))));
+      if (s.band && s.band[0][i] !== undefined) {
+        rows.push(el("div", { class: "row" },
+          el("span", { class: "swatch", style: `background:${s.bandColor || s.color};opacity:.5` }),
+          el("span", { class: "k" }, "95% CI"),
+          el("b", {}, `${valueLabel(s.band[0][i], this.opts)} – ${valueLabel(s.band[1][i], this.opts)}`)));
+      }
     }
-    this.tip.innerHTML = "";
-    this.tip.append(...rows);
+    this.tip.replaceChildren(...rows);
     this.tip.classList.add("show");
-    const w = this.tip.offsetWidth;
-    const boxW = this.canvas.clientWidth;
-    let left = px + 12;
-    if (left + w > boxW) left = Math.max(4, px - w - 12);
+    const w = this.tip.offsetWidth, h = this.tip.offsetHeight;
+    const boxW = this.canvas.clientWidth, boxH = this.canvas.clientHeight;
+    let left = px + 14;
+    if (left + w > boxW) left = Math.max(0, px - w - 14);
     this.tip.style.left = `${left}px`;
-    this.tip.style.top = `${Math.max(2, Math.min(py - 10, this.canvas.clientHeight - 40))}px`;
+    this.tip.style.top = `${Math.max(0, Math.min(py - h / 2, boxH - h))}px`;
   }
 
   draw() {
@@ -139,19 +185,27 @@ class Chart {
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h) return;
-    canvas.width = w * dpr; canvas.height = h * dpr;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
     const ctx = canvas.getContext("2d");
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const pad = { l: 46, r: 12, t: 12, b: 22 };
-    const plotW = w - pad.l - pad.r, plotH = h - pad.t - pad.b;
-    const lines = this.series.filter((s) => s.y && s.y.length);
+    const muted = themeColor("var(--muted-foreground)");
+    const grid = themeColor("var(--border)");
+    const surface = themeColor("var(--card)");
+    const mono = `11px ${themeColor("var(--font-mono)") || "monospace"}`;
+    const sans = `12px ${themeColor("var(--font-sans)") || "sans-serif"}`;
+
+    const lines = this.series
+      .filter((s) => s.y && s.y.length)
+      .map((s) => ({ ...s, color: themeColor(s.color),
+                     bandColor: themeColor(s.bandColor || s.color) }));
     if (!lines.length) {
-      ctx.fillStyle = css("--fg-faint");
-      ctx.font = "12px system-ui";
+      ctx.fillStyle = muted;
+      ctx.font = sans;
       ctx.textAlign = "center";
-      ctx.fillText(opts.emptyText || "no data yet", w / 2, h / 2);
+      ctx.textBaseline = "middle";
+      ctx.fillText(opts.emptyText || "No data yet", w / 2, h / 2);
       this.geom = null;
       return;
     }
@@ -162,117 +216,148 @@ class Chart {
         const x = s.x[i];
         if (x < xmin) xmin = x;
         if (x > xmax) xmax = x;
-        const v = s.y[i];
-        if (v > ymax) ymax = v;
-        if (opts.allowNegative && v < ymin) ymin = v;
+        const hi = s.band ? Math.max(s.y[i], s.band[1][i] ?? -Infinity) : s.y[i];
+        if (hi > ymax) ymax = hi;
+        if (opts.allowNegative && s.y[i] < ymin) ymin = s.y[i];
       }
     }
-    if (xmax === xmin) xmax = xmin + 1;
-    if (ymax <= ymin) ymax = ymin + 1;
-    if (opts.percent) ymax = Math.min(100, Math.max(ymax * 1.15, 5));
-    else ymax *= 1.1;
+    if (xmax === xmin) { xmin -= 0.5; xmax += 0.5; }
 
+    // Five y ticks on round numbers; tile charts step in whole powers of two.
+    const ticks = [];
+    if (opts.tileScale) {
+      ymax = Math.max(ymin + 1, Math.ceil(ymax));
+      const step = Math.max(1, Math.ceil((ymax - ymin) / 4));
+      ymax = ymin + step * Math.ceil((ymax - ymin) / step);
+      for (let v = ymin; v <= ymax + 1e-9; v += step) ticks.push(v);
+    } else {
+      const top = opts.percent ? Math.min(100, Math.max(ymax * 1.05, 5)) : ymax * 1.05;
+      const step = niceStep(Math.max(top - ymin, 1e-9) / 4);
+      ymax = ymin + step * 4;
+      for (let i = 0; i <= 4; i++) ticks.push(ymin + step * i);
+    }
+
+    ctx.font = mono;
+    const labelW = Math.max(...ticks.map((v) => ctx.measureText(valueLabel(v, opts)).width));
+    const pad = { l: Math.ceil(labelW) + 12, r: 8, t: 10, b: 26 };
+    const plotW = Math.max(10, w - pad.l - pad.r), plotH = Math.max(10, h - pad.t - pad.b);
     const X = (v) => pad.l + ((v - xmin) / (xmax - xmin)) * plotW;
     const Y = (v) => pad.t + plotH - ((v - ymin) / (ymax - ymin)) * plotH;
 
-    ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
-    ctx.fillStyle = css("--fg-faint");
-    ctx.font = "10px ui-monospace, monospace"; ctx.textAlign = "right";
-    for (let i = 0; i <= 4; i++) {
-      const v = ymin + ((ymax - ymin) * i) / 4;
+    // Grid and axes.
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = grid;
+    ctx.fillStyle = muted;
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    for (const v of ticks) {
       const y = Math.round(Y(v)) + 0.5;
       ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke();
-      ctx.fillText(valueLabel(v, opts), pad.l - 6, y + 3);
+      ctx.fillText(valueLabel(v, opts), pad.l - 8, y);
     }
-    ctx.textAlign = "center";
-    for (let i = 0; i <= 2; i++) {
-      const v = xmin + ((xmax - xmin) * i) / 2;
-      ctx.fillText(axisLabel(v, opts.xUnit), X(v), h - 7);
+    // X ticks on round numbers too, as many as fit.
+    ctx.textBaseline = "alphabetic";
+    const xstep = niceStep((xmax - xmin) / Math.max(3, Math.min(6, Math.floor(plotW / 110))));
+    for (let v = Math.ceil(xmin / xstep - 1e-9) * xstep; v <= xmax + 1e-9; v += xstep) {
+      const label = axisLabel(v, opts.xUnit);
+      const half = ctx.measureText(label).width / 2;
+      ctx.textAlign = "center";
+      ctx.fillText(label, Math.max(pad.l + half, Math.min(w - pad.r - half, X(v))), h - 8);
     }
 
+    // Series.
     for (const s of lines) {
       if (s.band) {
-        ctx.fillStyle = s.color + "22";
+        ctx.fillStyle = s.bandColor;
+        ctx.globalAlpha = 0.14;
         ctx.beginPath();
         for (let i = 0; i < s.x.length; i++) ctx[i ? "lineTo" : "moveTo"](X(s.x[i]), Y(s.band[0][i]));
         for (let i = s.x.length - 1; i >= 0; i--) ctx.lineTo(X(s.x[i]), Y(s.band[1][i]));
         ctx.closePath(); ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = s.bandColor;
+        ctx.lineWidth = 1.25;
+        for (const edge of s.band) {
+          ctx.beginPath();
+          for (let i = 0; i < s.x.length; i++) ctx[i ? "lineTo" : "moveTo"](X(s.x[i]), Y(edge[i]));
+          ctx.stroke();
+        }
       }
       ctx.strokeStyle = s.color;
-      ctx.lineWidth = s.width || 1.8;
+      ctx.lineWidth = s.width || 2;
       ctx.lineJoin = "round"; ctx.lineCap = "round";
       ctx.setLineDash(s.dash || []);
       ctx.beginPath();
-      let started = false;
       for (let i = 0; i < s.y.length; i++) {
-        const px = X(s.x[i]), py = Y(s.y[i]);
-        if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+        ctx[i ? "lineTo" : "moveTo"](X(s.x[i]), Y(s.y[i]));
       }
       ctx.stroke();
-      if (s.points) {
+      ctx.setLineDash([]);
+      if (s.points || s.y.length === 1) {
         ctx.fillStyle = s.color;
         for (let i = 0; i < s.y.length; i++) {
-          ctx.beginPath(); ctx.arc(X(s.x[i]), Y(s.y[i]), 2.6, 0, 7); ctx.fill();
+          ctx.beginPath(); ctx.arc(X(s.x[i]), Y(s.y[i]), 3, 0, 7); ctx.fill();
         }
       }
     }
-    ctx.setLineDash([]);
 
-    // hover marker
+    // Hover marker.
     const longest = lines.reduce((a, b) => (b.x.length > a.x.length ? b : a), lines[0]);
-    this.geom = { X, Y, xs: longest.x, count: longest.x.length, pad, plotW, plotH };
+    this.geom = { X, Y, xs: longest.x, count: longest.x.length, lines };
     if (this.hover !== null && this.hover < longest.x.length) {
-      const hx = X(longest.x[this.hover]);
-      ctx.strokeStyle = css("--fg-faint");
-      ctx.globalAlpha = 0.5;
-      ctx.setLineDash([3, 3]);
+      const hx = Math.round(X(longest.x[this.hover])) + 0.5;
+      ctx.strokeStyle = muted;
+      ctx.globalAlpha = 0.6;
+      ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(hx, pad.t); ctx.lineTo(hx, pad.t + plotH); ctx.stroke();
-      ctx.setLineDash([]); ctx.globalAlpha = 1;
+      ctx.globalAlpha = 1;
       for (const s of lines) {
         const v = s.y[this.hover];
         if (v === undefined || v === null) continue;
         ctx.fillStyle = s.color;
-        ctx.beginPath(); ctx.arc(hx, Y(v), 3.8, 0, 7); ctx.fill();
-        ctx.strokeStyle = css("--panel-2"); ctx.lineWidth = 1.6; ctx.stroke();
-      }
-    }
-
-    if (opts.legend) {
-      ctx.font = "10px system-ui"; ctx.textAlign = "left";
-      let lx = pad.l + 4;
-      for (const s of lines) {
-        if (!s.label) continue;
-        ctx.fillStyle = s.color;
-        ctx.fillRect(lx, pad.t - 5, 8, 2.5);
-        ctx.fillStyle = css("--fg-dim");
-        ctx.fillText(s.label, lx + 12, pad.t - 1);
-        lx += 14 + ctx.measureText(s.label).width + 12;
+        ctx.beginPath(); ctx.arc(hx, Y(v), 4, 0, 7); ctx.fill();
+        ctx.strokeStyle = surface; ctx.lineWidth = 2; ctx.stroke();
       }
     }
   }
 }
 
-/* Create a titled chart card; returns {node, chart}. */
-function chartCard(title, series, opts = {}) {
-  const canvas = el("canvas", { "aria-label": title, role: "img" });
-  const node = el("div", { class: "chart-box" },
-    el("h4", {}, title), canvas);
-  // Canvas needs to be in the DOM with a size before the first draw.
-  requestAnimationFrame(() => {
-    node._chart = new Chart(canvas, series, opts);
-  });
+/* A chart with its legend underneath; the node carries the Chart as _chart. */
+function chartView(series, opts = {}) {
+  const canvas = el("canvas", { role: "img", "aria-label": opts.label || "chart" });
+  const legend = el("div", { class: "chart-legend" });
+  const node = el("div", { class: "chart", style: `--chart-h:${opts.height || 260}px` },
+    canvas, legend);
+  node._legend = legend;
+  paintLegend(node, series, opts);
+  // The canvas needs to be in the document, with a size, before it can draw.
+  requestAnimationFrame(() => { node._chart = new Chart(canvas, series, opts); });
   return node;
 }
 
-function updateChartCard(node, series, opts) {
-  if (node && node._chart) node._chart.update(series, opts);
+function paintLegend(node, series, opts = {}) {
+  const items = [];
+  for (const s of series) {
+    if (!s.label || opts.legend === false) continue;
+    items.push(el("span", {}, el("span", { class: "swatch", style: `background:${s.color}` }), s.label));
+    if (s.band && s.bandLabel) {
+      items.push(el("span", {},
+        el("span", { class: "swatch", style: `background:${s.bandColor || s.color}` }), s.bandLabel));
+    }
+  }
+  node._legend.replaceChildren(...items);
+  node._legend.hidden = !items.length;
 }
 
-/* Redraw every live chart when the window resizes or the theme flips. */
-let _resizeTimer = null;
-window.addEventListener("resize", () => {
-  clearTimeout(_resizeTimer);
-  _resizeTimer = setTimeout(() => {
-    $$(".chart-box").forEach((b) => b._chart && b._chart.draw());
-  }, 140);
-});
+function updateChart(node, series, opts) {
+  if (!node) return;
+  paintLegend(node, series, { ...(node._chart?.opts || {}), ...(opts || {}) });
+  if (opts?.label) node.querySelector("canvas").setAttribute("aria-label", opts.label);
+  if (node._chart) node._chart.update(series, opts);
+  else requestAnimationFrame(() => node._chart && node._chart.update(series, opts));
+}
+
+// Tick labels are drawn in Geist Mono; redraw once the font has loaded.
+if (document.fonts && document.fonts.ready) {
+  document.fonts.ready.then(() => Chart.redrawAll()).catch(() => { });
+}
