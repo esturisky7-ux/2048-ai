@@ -101,6 +101,7 @@ class ServerTest(unittest.TestCase):
 class TestStatic(ServerTest):
     def test_the_app_shell_and_its_assets_are_served(self):
         for path in ("/", "/index.html", "/static/css/app.css",
+                     "/static/js/boot.js", "/static/js/icons.js",
                      "/static/js/core.js", "/static/js/charts.js",
                      "/static/js/ui.js", "/static/js/shell.js",
                      "/static/js/views/overview.js",
@@ -127,6 +128,30 @@ class TestStatic(ServerTest):
         for href in re.findall(r'<link rel="stylesheet" href="([^"]+)"', html):
             status, _, _ = self.get(href)
             self.assertEqual(status, 200, f"{href} referenced but not served")
+
+    def test_the_bundled_fonts_are_served_as_fonts(self):
+        """The stylesheet's fonts ship with the app rather than a CDN."""
+        import posixpath
+        import re
+        _, css, _ = self.get("/static/css/app.css")
+        urls = re.findall(r'url\("(\.\./fonts/[^"]+)"\)', css.decode())
+        self.assertTrue(urls, "app.css references no bundled fonts")
+        for url in urls:
+            path = posixpath.normpath(posixpath.join("/static/css", url))
+            status, body, headers = self.get(path)
+            self.assertEqual(status, 200, path)
+            self.assertEqual(headers.get("Content-Type"), "font/woff2", path)
+            self.assertEqual(body[:4], b"wOF2", path)
+
+    def test_the_page_loads_nothing_from_another_origin(self):
+        """No CDN scripts, stylesheets or fonts: the page works offline."""
+        import re
+        _, html, _ = self.get("/")
+        _, css, _ = self.get("/static/css/app.css")
+        self.assertEqual(re.findall(r'(?:src|href)="(?:https?:)?//[^"]*"',
+                                    html.decode()), [])
+        self.assertEqual(re.findall(r'(?:url\(|@import)\s*["\']?(?:https?:)?//',
+                                    css.decode()), [])
 
     def test_traversal_out_of_the_static_directory_is_refused(self):
         for path in ("/static/../../train.py",

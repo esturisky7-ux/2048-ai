@@ -8,5 +8,6 @@
 
 # Never diff or convert these.
 *.png binary
+*.woff2 binary
 *.f32 binary
 *.bin binary

@@ -572,6 +572,29 @@ which are drawn on `<canvas>` directly.
                        checkpoints/  ·  data/
 ```
 
+### The front end
+
+Plain scripts loaded in order by `dashboard/static/index.html` — no bundler,
+no framework, nothing from a CDN:
+
+| File | Responsibility |
+|---|---|
+| `js/boot.js` | runs in `<head>`: restores the theme and sidebar state before the first paint |
+| `js/core.js` | formatting, the API client, live updates (SSE with a polling fallback), routing, toasts and dialogs |
+| `js/icons.js` | the Lucide icons the interface uses, inlined as SVG |
+| `js/charts.js` | canvas line charts with hover and keyboard read-out, coloured from theme tokens |
+| `js/ui.js` | shared components: cards, stat boxes, buttons, badges, fields, tabs, the 2048 board, CI bars |
+| `js/views/*.js` | one file per page; each registers `mount()`, `unmount()` and optionally `onStatus()` |
+| `js/shell.js` | the sidebar (collapsible, a sheet on phones), the theme toggle, the version footer |
+| `css/app.css` | the design system: colour tokens for light and dark, components, layout |
+
+Every colour is a CSS custom property on `:root` (light) and `.dark` (dark),
+so switching theme is one class on `<html>`; charts read the same tokens when
+they draw. Layout is flexbox and grid with `minmax(0, 1fr)` tracks: pairs of
+cards sit side by side on a wide window and stack on a narrow one, and the
+game board scales with container-query units. The views build their markup
+from the components in `ui.js`, so the look lives in one place.
+
 ### Why the split
 
 **Transport and meaning are separate.** `server.py` owns the socket;

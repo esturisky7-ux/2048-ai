@@ -59,8 +59,12 @@ const F = {
     if (!ts) return "—";
     return new Date(ts * 1000).toLocaleString();
   },
+  cap(s) {
+    s = String(s || "");
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  },
   tileClass(v) {
-    return v > 32768 ? "t32768" : `t${v}`;
+    return v >= 8192 ? "t8192" : `t${v}`;
   },
 };
 
@@ -84,19 +88,6 @@ function el(tag, attrs = {}, ...children) {
   }
   return node;
 }
-/* Append children, skipping the nullish ones.
- *
- * Element.append() stringifies null into the literal text "null" — a
- * genuinely surprising way to render `condition ? el(...) : null`. el() already
- * filters its children; this is the same courtesy for an existing node. */
-function add(parent, ...children) {
-  for (const c of children.flat()) {
-    if (c === null || c === undefined || c === false) continue;
-    parent.append(c.nodeType ? c : document.createTextNode(String(c)));
-  }
-  return parent;
-}
-
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
@@ -134,13 +125,31 @@ class ApiError extends Error {
   constructor(message, status) { super(message); this.status = status; }
 }
 
+/* The badge for the system state: filled while training, secondary while
+ * other work runs, outline when idle. Shared by the header and Overview. */
+function statusBadge(state) {
+  const [variant, label, live] = {
+    TRAINING: ["default", "Training", true],
+    STARTING: ["secondary", "Starting"],
+    STOPPING: ["outline", "Stopping"],
+    EVALUATING: ["secondary", "Evaluating"],
+    BENCHMARKING: ["secondary", "Benchmarking"],
+    EXPERIMENTING: ["secondary", "Experimenting"],
+    STOPPED: ["outline", "Idle"],
+  }[state] || ["outline", "Idle"];
+  return { variant, label, live: !!live };
+}
+
 /* ----------------------------------------------------------- notifications */
 const Toast = {
   container: null,
+  ICONS: { ok: "circle-check", warn: "triangle-alert", error: "circle-x", info: "info" },
   show(title, message, kind = "info", ms = 5200) {
     if (!this.container) this.container = $("#toasts");
-    const close = el("button", { title: "Dismiss", "aria-label": "Dismiss" }, "×");
+    const close = el("button", { class: "t-close", title: "Dismiss", "aria-label": "Dismiss" },
+      icon("x", 14));
     const node = el("div", { class: `toast ${kind}`, role: "status" },
+      icon(this.ICONS[kind] || "info", 16),
       el("div", { class: "t-body" },
         el("div", { class: "t-title" }, title),
         message ? el("div", { class: "t-msg" }, message) : null),
@@ -155,24 +164,64 @@ const Toast = {
   error(t, m) { return this.show(t, m, "error", 9000); },
 };
 
-function confirmDialog(title, message, { danger = false, confirmText = "Confirm" } = {}) {
+/* A modal with a title, a description, optional body and a footer. Resolves
+ * with whatever `done` is called with; Escape and the scrim resolve `false`. */
+function modal(title, description, { body = null, buttons = [], initial = null } = {}) {
   return new Promise((resolve) => {
     const scrim = el("div", { class: "modal-scrim" });
-    const cancel = el("button", { class: "btn" }, "Cancel");
-    const go = el("button", { class: `btn ${danger ? "btn-danger" : "btn-primary"}` }, confirmText);
-    const modal = el("div", { class: "modal", role: "dialog", "aria-modal": "true" },
-      el("h3", {}, title), el("p", {}, message),
-      el("div", { class: "btn-row" }, cancel, go));
-    scrim.append(modal);
-    const done = (v) => { scrim.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
-    const onKey = (e) => { if (e.key === "Escape") done(false); if (e.key === "Enter") done(true); };
-    cancel.onclick = () => done(false);
-    go.onclick = () => done(true);
+    const titleId = `modal-${Date.now()}`;
+    const box = el("div", { class: "modal", role: "dialog", "aria-modal": "true",
+                            "aria-labelledby": titleId },
+      el("h2", { class: "modal-title", id: titleId }, title),
+      description ? el("p", { class: "modal-description" }, description) : null,
+      body,
+      el("div", { class: "modal-footer" }, ...buttons.map((b) => b.node)));
+    scrim.append(box);
+    const opener = document.activeElement;
+    const done = (v) => {
+      scrim.remove();
+      document.removeEventListener("keydown", onKey, true);
+      if (opener && opener.focus) opener.focus();
+      resolve(v);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); done(false); }
+      else if (e.key === "Enter" && e.target.tagName !== "BUTTON") {
+        const primary = buttons.find((b) => b.primary);
+        if (primary) { e.preventDefault(); done(primary.value()); }
+      }
+    };
+    for (const b of buttons) b.node.onclick = () => done(b.value());
     scrim.onclick = (e) => { if (e.target === scrim) done(false); };
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     document.body.append(scrim);
-    go.focus();
+    (initial || buttons[buttons.length - 1]?.node)?.focus();
   });
+}
+
+function confirmDialog(title, message, { danger = false, confirmText = "Confirm" } = {}) {
+  const cancel = el("button", { class: "btn btn-outline", type: "button" }, "Cancel");
+  const go = el("button", { class: `btn ${danger ? "btn-destructive" : ""}`, type: "button" },
+    confirmText);
+  return modal(title, message, { buttons: [
+    { node: cancel, value: () => false },
+    { node: go, value: () => true, primary: true },
+  ] });
+}
+
+/* A styled replacement for window.prompt(): resolves the text, or null. */
+function promptDialog(title, message, value = "", { confirmText = "Save", placeholder = "",
+                                                    maxlength = 80 } = {}) {
+  const input = el("input", { type: "text", value, placeholder, maxlength,
+                              "aria-label": title });
+  const cancel = el("button", { class: "btn btn-outline", type: "button" }, "Cancel");
+  const go = el("button", { class: "btn", type: "button" }, confirmText);
+  const result = modal(title, message, { body: input, initial: input, buttons: [
+    { node: cancel, value: () => null },
+    { node: go, value: () => input.value, primary: true },
+  ] });
+  requestAnimationFrame(() => input.select());
+  return result.then((v) => (v === false ? null : v));
 }
 
 /* ------------------------------------------------------------------- App */
@@ -215,12 +264,12 @@ const App = {
       const prev = this._lastJobStates.get(job.id);
       if (prev && prev !== job.state) {
         if (job.state === "COMPLETED") {
-          Toast.ok(`${job.type} finished`, job.label);
+          Toast.ok(`${F.cap(job.type)} finished`, job.label);
           document.dispatchEvent(new CustomEvent("job:done", { detail: job }));
         } else if (job.state === "FAILED") {
-          Toast.error(`${job.type} failed`, job.error || job.label);
+          Toast.error(`${F.cap(job.type)} failed`, job.error || job.label);
         } else if (job.state === "CANCELLED") {
-          Toast.show(`${job.type} stopped`, job.label, "warn");
+          Toast.show(`${F.cap(job.type)} stopped`, job.label, "warn");
           document.dispatchEvent(new CustomEvent("job:done", { detail: job }));
         }
       }
@@ -233,26 +282,15 @@ const App = {
   },
 
   paintGlobalStatus(status) {
-    const map = {
-      TRAINING: ["live", "Training"],
-      STARTING: ["busy", "Starting"],
-      STOPPING: ["warn", "Stopping"],
-      EVALUATING: ["busy", "Evaluating"],
-      BENCHMARKING: ["busy", "Benchmarking"],
-      EXPERIMENTING: ["busy", "Experimenting"],
-      STOPPED: ["idle", "Idle"],
-    };
-    const [cls, label] = map[status.state] || ["idle", "Idle"];
+    const { variant, label, live } = statusBadge(status.state);
     const pill = $("#global-status");
     if (pill) {
-      pill.className = `pill ${cls}`;
-      pill.innerHTML = "";
-      pill.append(el("i"), el("span", {}, label));
+      pill.className = `badge${variant === "default" ? "" : ` badge-${variant}`} status-badge${live ? " live" : ""}`;
+      pill.title = `Status: ${label}`;
+      pill.replaceChildren(el("i"), el("span", { class: "status-label" }, label));
     }
     const dot = $("#nav-training-dot");
-    if (dot) dot.style.display = status.training?.running ? "" : "none";
-    const t = $("#topbar-run");
-    if (t) t.textContent = status.run;
+    if (dot) dot.hidden = !status.training?.running;
   },
 
   /* -- live updates ---------------------------------------------------- */
@@ -343,12 +381,21 @@ const App = {
   },
 
   /* -- theme ------------------------------------------------------------ */
+  /* "dark", "light" or "system". The class on <html> is what the stylesheet
+   * reads; localStorage lets boot.js restore it before the first paint. */
   applyTheme(theme) {
     const wanted = theme === "system"
       ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
       : theme;
-    document.documentElement.setAttribute("data-theme", wanted);
+    document.documentElement.classList.toggle("dark", wanted !== "light");
+    try { localStorage.setItem("theme", theme); } catch (_) { }
+    const toggle = $("#theme-toggle");
+    if (toggle) toggle.replaceChildren(icon(wanted === "light" ? "moon" : "sun"));
+    // Chart colours come from CSS custom properties, so redraw them.
+    if (typeof Chart !== "undefined") requestAnimationFrame(() => Chart.redrawAll());
   },
+
+  isDark() { return document.documentElement.classList.contains("dark"); },
 
   /* -- routing ---------------------------------------------------------- */
   route() {
@@ -361,33 +408,34 @@ const App = {
     this.current = view;
     this.currentName = view === this.views[name] ? name : "overview";
 
-    $$(".nav a").forEach((a) => {
-      a.classList.toggle("active", a.dataset.view === this.currentName);
-      if (a.dataset.view === this.currentName) a.setAttribute("aria-current", "page");
+    $$(".nav-item").forEach((a) => {
+      const on = a.dataset.view === this.currentName;
+      a.classList.toggle("active", on);
+      if (on) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
     });
     $("#page-title").textContent = view.title || "";
     $("#page-sub").textContent = view.subtitle || "";
     const actions = $("#page-actions");
-    actions.innerHTML = "";
+    actions.replaceChildren();
 
     const root = $("#view");
-    root.innerHTML = "";
+    root.replaceChildren();
     document.title = `${view.title || "2048 AI"} · 2048 AI Control Center`;
     try {
       view.mount(root, { args: rest, actions });
     } catch (e) {
       console.error(e);
-      root.append(el("div", { class: "panel empty" },
-        el("h3", {}, "This page failed to load"),
-        el("div", { class: "mono" }, String(e && e.message || e))));
+      root.append(card(
+        el("div", { class: "card-content" },
+          emptyState("triangle-alert", "This page failed to load",
+            el("span", { class: "mono" }, String(e && e.message || e))))));
     }
     if (this.status) {
       try { view.onStatus && view.onStatus(this.status); } catch (_) { }
     }
-    $(".sidebar")?.classList.remove("open");
-    $(".scrim")?.remove();
-    root.scrollIntoView({ block: "start" });
+    closeMobileSidebar();
+    window.scrollTo({ top: 0 });
   },
 
   go(path) { location.hash = "#/" + path; },
@@ -420,18 +468,6 @@ const Jobs = {
     tick();
     return () => { stopped = true; };
   },
-
-  progressBar(job) {
-    const p = job.progress || {};
-    const total = p.total || 0;
-    const done = p.done || 0;
-    const frac = total ? Math.min(1, done / total) : 0;
-    const wrap = el("div", {},
-      el("div", { class: "bar blue" }, el("i", { style: `width:${frac * 100}%` })),
-      el("div", { class: "meta", style: "margin-top:5px" },
-        total ? `${F.n(done)} / ${F.n(total)}` : (p.phase || job.state)));
-    return wrap;
-  },
 };
 
 /* ----------------------------------------------------------------- boot */
@@ -463,38 +499,40 @@ async function boot() {
 
 const NAV = [
   { group: "Monitor", items: [
-    { id: "overview", label: "Overview", icon: "◧" },
-    { id: "training", label: "Training", icon: "▶", dot: true },
-    { id: "play", label: "Play", icon: "◆" },
+    { id: "overview", label: "Overview", icon: "layout-dashboard" },
+    { id: "training", label: "Training", icon: "activity", dot: true },
+    { id: "play", label: "Play", icon: "gamepad-2" },
   ] },
   { group: "Measure", items: [
-    { id: "evaluate", label: "Evaluate", icon: "✓" },
-    { id: "compare", label: "Compare", icon: "⇄" },
-    { id: "experiments", label: "Experiments", icon: "⚗" },
-    { id: "benchmarks", label: "Benchmarks", icon: "◷" },
+    { id: "evaluate", label: "Evaluate", icon: "clipboard-check" },
+    { id: "compare", label: "Compare", icon: "git-compare" },
+    { id: "experiments", label: "Experiments", icon: "flask-conical" },
+    { id: "benchmarks", label: "Benchmarks", icon: "gauge" },
   ] },
   { group: "Manage", items: [
-    { id: "checkpoints", label: "Checkpoints", icon: "▤" },
-    { id: "logs", label: "Logs", icon: "≡" },
-    { id: "system", label: "System", icon: "⚙" },
-    { id: "settings", label: "Settings", icon: "⚙" },
+    { id: "checkpoints", label: "Checkpoints", icon: "database" },
+    { id: "logs", label: "Logs", icon: "scroll-text" },
+    { id: "system", label: "System", icon: "cpu" },
+    { id: "settings", label: "Settings", icon: "settings" },
   ] },
 ];
 
 function buildNav() {
   const nav = $(".nav");
-  nav.innerHTML = "";
+  nav.replaceChildren();
   for (const section of NAV) {
-    const g = el("div", { class: "nav-group" }, el("span", {}, section.group));
+    const menu = el("ul", { class: "nav-menu" });
     for (const item of section.items) {
-      const a = el("a", { href: `#/${item.id}`, dataset: { view: item.id } },
-        el("span", { class: "ico" }, item.icon),
-        el("span", {}, item.label),
-        item.dot ? el("span", { class: "badge-dot", id: "nav-training-dot",
-                                style: "display:none" }) : null);
-      g.append(a);
+      menu.append(el("li", {},
+        el("a", { class: "nav-item", href: `#/${item.id}`,
+                  dataset: { view: item.id, tooltip: item.label } },
+          icon(item.icon),
+          el("span", { class: "label" }, item.label)),
+        item.dot ? el("span", { class: "nav-dot", id: "nav-training-dot",
+                                title: "Training is running", hidden: true }) : null));
     }
-    nav.append(g);
+    nav.append(el("div", { class: "nav-group", role: "group", "aria-label": section.group },
+      el("div", { class: "nav-group-label" }, section.group), menu));
   }
 }
 
@@ -516,24 +554,25 @@ function installShortcuts() {
 }
 
 function showShortcuts() {
-  const rows = [
-    ["g then o", "Overview"], ["g then t", "Training"], ["g then p", "Play"],
-    ["g then e", "Evaluate"], ["g then c", "Compare"], ["g then k", "Checkpoints"],
-    ["g then l", "Logs"], ["g then s", "System"],
-    ["Arrows / WASD", "Move (human game)"], ["Space", "Pause or resume a watched game"],
-    ["?", "This list"],
-  ];
-  const scrim = el("div", { class: "modal-scrim" });
-  const close = el("button", { class: "btn btn-primary" }, "Close");
-  scrim.append(el("div", { class: "modal" },
-    el("h3", {}, "Keyboard shortcuts"),
-    el("dl", { class: "kv" }, rows.flatMap(([k, v]) =>
-      [el("dt", {}, el("kbd", {}, k)), el("dd", {}, v)])),
-    el("div", { class: "btn-row", style: "margin-top:16px" }, close)));
-  close.onclick = () => scrim.remove();
-  scrim.onclick = (e) => { if (e.target === scrim) scrim.remove(); };
-  document.body.append(scrim);
-  close.focus();
+  const close = el("button", { class: "btn", type: "button" }, "Close");
+  modal("Keyboard Shortcuts", null, {
+    body: shortcutList(),
+    buttons: [{ node: close, value: () => true, primary: true }],
+  });
+}
+
+/* The shortcut reference, shared by the "?" dialog and the Settings page. */
+function shortcutList() {
+  const k = (t) => el("kbd", {}, t);
+  const then = () => el("span", { class: "section-note" }, "then");
+  return el("dl", { class: "keys" },
+    el("dt", {}, k("g"), then(), k("o/t/p/e/c/x/b/k/l/s")), el("dd", {}, "Jump to a page"),
+    el("dt", {}, el("span", { class: "kbd-group" }, k("↑"), k("↓"), k("←"), k("→")),
+      el("span", { class: "section-note" }, "/"), k("WASD")),
+    el("dd", {}, "Move, in a human game"),
+    el("dt", {}, k("Space")), el("dd", {}, "Pause or resume a watched game"),
+    el("dt", {}, k("Ctrl"), k("B")), el("dd", {}, "Collapse or expand the sidebar"),
+    el("dt", {}, k("?")), el("dd", {}, "Show the shortcut list"));
 }
 
 document.addEventListener("DOMContentLoaded", boot);

@@ -1,51 +1,59 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" class="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>2048 AI Control Center</title>
+<link rel="preload" href="/static/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/css/app.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%23edc22e'/><text y='68' x='50' text-anchor='middle' font-size='42' font-family='sans-serif' font-weight='700' fill='%23fff'>2048</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='25' fill='%23f9c230'/><text y='64' x='50' text-anchor='middle' font-size='36' font-family='sans-serif' font-weight='700' fill='%233b2301'>2048</text></svg>">
+<!-- Applies the saved theme and sidebar state before the first paint. -->
+<script src="/static/js/boot.js"></script>
 </head>
 <body>
 
 <div class="app">
-  <aside class="sidebar" id="sidebar">
-    <div class="brand">
-      <div class="brand-mark">2048</div>
-      <div class="brand-text">
-        <h1>AI Control Center</h1>
-        <p>local · zero dependencies</p>
-      </div>
+  <aside class="sidebar" id="sidebar" aria-label="Navigation">
+    <div class="sidebar-header">
+      <a class="brand" href="#/overview" aria-label="2048 AI Control Center — Overview">
+        <div class="brand-mark" aria-hidden="true">2048</div>
+        <div class="brand-text">
+          <div class="brand-title">AI Control Center</div>
+          <div class="brand-sub">local · zero dependencies</div>
+        </div>
+      </a>
     </div>
     <nav class="nav" aria-label="Sections"></nav>
-    <div class="sidebar-foot">
-      <span id="foot-version">—</span>
-      <button class="btn btn-ghost btn-sm" id="theme-toggle" title="Toggle theme"
-              aria-label="Toggle light and dark theme">◐</button>
+    <div class="sidebar-footer">
+      <div class="foot" id="sidebar-foot" title="Version and branch"><span id="foot-version">—</span></div>
     </div>
   </aside>
 
-  <main class="main">
+  <div class="main">
     <header class="topbar">
-      <button class="btn btn-ghost menu-btn" id="menu-btn" aria-label="Open navigation">☰</button>
-      <div>
-        <h2 id="page-title">Overview</h2>
-        <div class="sub" id="page-sub"></div>
+      <button class="btn btn-ghost btn-icon btn-trigger" id="menu-btn" type="button"
+              aria-label="Toggle sidebar" aria-controls="sidebar" title="Toggle sidebar (Ctrl+B)"></button>
+      <div class="separator-v" role="separator" aria-orientation="vertical"></div>
+      <div class="page-heading">
+        <h1 class="page-title" id="page-title">Overview</h1>
+        <div class="page-sub" id="page-sub"></div>
       </div>
       <div class="topbar-right">
-        <div id="page-actions" class="btn-row"></div>
-        <span class="pill idle" id="global-status"><i></i><span>—</span></span>
+        <div id="page-actions" class="page-actions"></div>
+        <span class="badge badge-outline status-badge" id="global-status" role="status"><i></i><span class="status-label">—</span></span>
+        <button class="btn btn-ghost btn-icon btn-sm" id="theme-toggle" type="button"
+                title="Toggle theme" aria-label="Toggle light and dark theme"></button>
       </div>
     </header>
-    <div class="content" id="view"></div>
-  </main>
+    <main class="content" id="view"></main>
+  </div>
 </div>
 
 <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
 <script src="/static/js/core.js"></script>
+<script src="/static/js/icons.js"></script>
 <script src="/static/js/charts.js"></script>
 <script src="/static/js/ui.js"></script>
 <script src="/static/js/views/overview.js"></script>
