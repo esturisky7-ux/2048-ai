@@ -250,19 +250,24 @@ class JobManager:
         with self.lock:
             if job.state in TERMINAL_STATES:
                 return
-            job.ended_at = _now()
             # A stopped job exiting non-zero is normal: an interrupted process
             # reports 130 (or whatever the platform uses) even though it saved
             # correctly, so the state we asked for wins over the exit code.
             if job.state == STOPPING:
-                job.state = CANCELLED
+                state = CANCELLED
             elif code == 0:
-                job.state = COMPLETED
+                state = COMPLETED
             else:
-                job.state = FAILED
+                state = FAILED
                 tail = [ln for ln in job.tail(40) if ln.strip()]
                 job.error = tail[-1] if tail else f"exited with code {code}"
             job.result = self._read_result(job)
+            job.ended_at = _now()
+            # Published last. Readers (the API's status payload, anything
+            # polling job.state) do not take the lock, and this runs on the
+            # reaper thread, so a job must never look finished before its
+            # error and result are in place.
+            job.state = state
         level = "error" if job.state == FAILED else "info"
         self._emit(level, f"{job.type} job {job.state.lower()}",
                    job_id=job.id, label=job.label, error=job.error)

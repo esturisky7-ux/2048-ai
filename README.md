@@ -503,7 +503,7 @@ on macOS) collapses the sidebar, and `?` lists them all.
 | **Supervised jobs** | Training and evaluation run as subprocesses with real state, progress and a graceful stop. |
 | **Play it yourself** | Human play and You-vs-AI, on the same Python engine the AI uses. |
 | **Localhost-only** | Binds to 127.0.0.1, refuses cross-origin requests, never takes a filesystem path from the browser. |
-| **Tested** | 339 tests, run on Linux, Windows and macOS by CI. |
+| **Tested** | 340 tests, run on Linux, Windows and macOS by CI. |
 
 ---
 
@@ -705,7 +705,7 @@ evaluation/   the fixed, seeded evaluation procedure and its statistics
 experiments/  runs a config, evaluates it, stores config+result together
 dashboard/    stdlib HTTP server, JSON API, static front end, live game thread
 config/       default.json plus 18 experiment configs
-tests/        339 tests: unit, integration, API, end-to-end, plus a benchmark
+tests/        340 tests: unit, integration, API, end-to-end, plus a benchmark
 docs/         architecture and command reference
 ```
 
@@ -976,7 +976,7 @@ python3 tests/benchmark_engine.py                # throughput benchmark
 
 On Windows use `py -m unittest discover -s tests`.
 
-**339 tests.** What they actually check:
+**340 tests.** What they actually check:
 
 - **`test_engine.py`** — merge rules including the awkward cases (`2 2 2 2` →
   `4 4 . .`, `4 4 8 8` → `8 16 . .`), that a freshly merged tile cannot merge
@@ -1007,8 +1007,9 @@ On Windows use `py -m unittest discover -s tests`.
   control center.
 - **`test_jobs.py`** — the job manager: jobs reach the right terminal state, a
   **stopped job gets to save before it exits**, an unresponsive child is
-  escalated rather than hanging shutdown, two jobs cannot work on one run, and
-  finished jobs are trimmed while live ones are not.
+  escalated rather than hanging shutdown, two jobs cannot work on one run,
+  finished jobs are trimmed while live ones are not, and a failed job is never
+  visible as finished before its error is recorded.
 - **`test_api.py`** — every route; run names that are not safe path components;
   numeric ranges; agent allowlists; **checkpoint identifiers that try to become
   file paths**; game sessions and their controls; settings clamping. Its
@@ -1320,7 +1321,7 @@ Known differences that are documented rather than papered over:
 │   ├── default.json           the default configuration
 │   └── experiments/           18 experiment configs
 │
-├── tests/                     339 tests + the engine benchmark
+├── tests/                     340 tests + the engine benchmark
 ├── docs/
 │   ├── ARCHITECTURE.md        how the pieces fit together, and why
 │   ├── COMMANDS.md            command reference, with Windows equivalents
