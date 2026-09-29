@@ -434,7 +434,14 @@ function evaluationResult(res) {
       el("td", { class: "num muted" }, r.count !== null && r.count !== undefined ? F.n(r.count) : "—")));
   }
 
+  const integrity = res.integrity;
+  const check = el("div", { class: "note", role: "status" }, integrity
+    ? (integrity.valid ? "Integrity checks passed: " : "Evaluation warning: ") +
+      `${integrity.invalid_actions} invalid actions; ${integrity.truncated_games} truncated games; ` +
+      (integrity.complete ? "all requested games played." : "evaluation incomplete.")
+    : "Legacy result: invalid actions and truncation were not recorded.");
   return el("div", { class: "stack" },
+    check,
     stats([
       statTile("Mean score", F.n(res.mean_score, 0),
         `95% CI ${F.compact(ci[0])} – ${F.compact(ci[1])}`),
@@ -449,6 +456,34 @@ function evaluationResult(res) {
     el("div", { class: "footnote" },
       `${F.n(res.games)} games · seed ${res.seed} · `,
       `${F.n(res.elapsed_seconds, 1)}s (${F.n(res.games_per_second, 2)} games/s)`));
+}
+
+/* The optional demo is local to the release archive; no network downloads. */
+function demoButton() {
+  const btn = button("Try a Trained Agent", { variant: "outline", icon: "play" });
+  btn.onclick = async () => {
+    btn.disabled = true;
+    try {
+      const r = await API.post("/api/demo/install", {});
+      App.demoCheckpoint = r.checkpoint;
+      App.setRun(r.run);
+      App.go(`play/watch/${encodeURIComponent(r.checkpoint)}`);
+    } catch (e) {
+      Toast.error("Demo unavailable", e.message);
+    } finally { btn.disabled = false; }
+  };
+  const wrap = el("div", { class: "stack stack-8" }, btn);
+  API.get("/api/demo").then((s) => {
+    if (!s.available) {
+      btn.disabled = true;
+      wrap.append(el("a", { href: s.release_url, target: "_blank", rel: "noopener",
+        class: "note" }, "Get the optional demo edition from Releases"));
+    } else {
+      wrap.append(el("span", { class: "note" },
+        "Uses a small pretrained agent included in this release. Runs offline."));
+    }
+  }).catch(() => {});
+  return wrap;
 }
 
 /* Download helper used by the CSV/JSON export buttons. */

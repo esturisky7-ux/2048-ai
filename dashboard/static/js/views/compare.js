@@ -110,13 +110,14 @@ App.views.compare = {
       () => {
         const head = ["agent", "games", "mean", "ci_low", "ci_high", "median",
                       "highest_tile", "rate_2048", "rate_4096", "games_per_second",
-                      "ms_per_decision"];
+                      "ms_per_decision", "integrity_valid", "invalid_actions", "truncated_games"];
         const body = names.map((n) => {
           const r = results[n];
           const ci = r.ci95_mean || [0, 0];
           return [n, r.games, r.mean_score, ci[0], ci[1], r.median_score,
                   r.highest_tile, _rateOf(r, "2048"), _rateOf(r, "4096"),
-                  r.games_per_second, r.ms_per_decision];
+                  r.games_per_second, r.ms_per_decision, r.integrity?.valid,
+                  r.integrity?.invalid_actions, r.integrity?.truncated_games];
         });
         downloadFile(`comparison-${payload.games}.csv`, toCSV([head, ...body]), "text/csv");
       });
@@ -134,7 +135,10 @@ App.views.compare = {
       const ci = r.ci95_mean || [0, 0];
       return el("tr", {},
         el("td", {}, el("span", { class: "inline", style: "flex-wrap:nowrap" },
-          el("span", { class: "swatch", style: `background:${colors[i]}` }), n)),
+          el("span", { class: "swatch", style: `background:${colors[i]}` }), n),
+          el("div", { class: "note" }, !r.integrity ? "Legacy: integrity unknown" :
+            r.integrity.valid ? "Integrity passed" :
+            `Warning: ${r.integrity.invalid_actions} invalid actions, ${r.integrity.truncated_games} truncated games`)),
         el("td", { class: "num" }, F.n(r.mean_score, 0)),
         el("td", { class: "num muted" }, `${F.compact(ci[0])} – ${F.compact(ci[1])}`),
         el("td", { class: "num" }, F.n(r.median_score, 0)),

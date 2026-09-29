@@ -914,6 +914,9 @@ def handle_get(path: str, query: dict) -> dict:
         return {"comparisons": store.list_comparisons()}
     if path == "/api/benchmarks":
         return {"benchmarks": store.list_benchmarks()}
+    if path == "/api/demo":
+        from training.demo import status
+        return status()
     if path == "/api/checkpoints":
         return {"checkpoints": store.list_checkpoints()}
     if path == "/api/experiments":
@@ -948,6 +951,16 @@ def handle_get(path: str, query: dict) -> dict:
 
 def handle_post(path: str, data: dict) -> dict:
     """Dispatch a POST. ``data`` is the decoded JSON body."""
+    if path == "/api/demo/install":
+        from training.demo import install
+        try:
+            return {"ok": True, **install()}
+        except FileNotFoundError as e:
+            raise ApiError(str(e), status=404)
+        except (FileExistsError, RunBusy) as e:
+            raise ApiError(str(e), status=409)
+        except (ValueError, OSError) as e:
+            raise ApiError(f"Could not install demo: {e}")
     if path == "/api/training/start":
         return start_training(data)
     if path == "/api/training/resume":

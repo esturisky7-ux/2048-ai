@@ -67,6 +67,12 @@ def comparison_table(results: dict) -> str:
             f"{r['highest_tile']:>8,}"
             f"{r['tile_rates']['2048']['rate']*100:>7.1f}%"
             f"{r['games_per_second']:>9.2f}")
+    for name, result in results.items():
+        check = result.get("integrity", {})
+        if check and not check["valid"]:
+            lines.append(f"WARNING {name}: {check['invalid_actions']} invalid actions, "
+                         f"{check['truncated_games']} truncated games, "
+                         f"complete={check['complete']}")
     return "\n".join(lines)
 
 
@@ -100,10 +106,16 @@ def main() -> int:
     p.add_argument("--out", default=None, help="write JSON results here")
     p.add_argument("--no-save", action="store_true",
                    help="do not append to the run's evaluations.jsonl")
+    p.add_argument("--allow-invalid-moves", action="store_true",
+                   help="diagnostic mode: substitute illegal actions and flag results")
+    p.add_argument("--move-limit", type=int, default=200000,
+                   help="maximum moves per game; truncated games are flagged")
     p.add_argument("--quiet", action="store_true",
                    help="no progress line while games are running")
     p.add_argument("--version", action="version", version=version_string())
     args = p.parse_args()
+    if args.games < 1 or args.move_limit < 1:
+        p.error("--games and --move-limit must be positive")
     # --depth and --depth=N are both explicit; the learned agent defaults to
     # greedy (depth 1) unless the user actually asked for search.
     args.depth_given = any(a == "--depth" or a.startswith("--depth=")
@@ -159,7 +171,12 @@ def main() -> int:
 
             try:
                 res = evaluate(agent, games=args.games, seed=seed,
-                               progress=progress if show_progress else None)
+                               progress=progress if show_progress else None,
+                               strict=not args.allow_invalid_moves,
+                               move_limit=args.move_limit)
+            except ValueError as e:
+                print(f"evaluation failed: {e}; no results written", file=sys.stderr)
+                return 1
             except KeyboardInterrupt:
                 if show_progress:
                     print("\r" + " " * 40, end="\r")
@@ -188,7 +205,7 @@ def main() -> int:
         run.create_dirs()
         with open(run.eval_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(results["learned"], separators=(",", ":")) + "\n")
-    return 0
+    return 0 if all(r.get("integrity", {}).get("valid") for r in results.values()) else 1
 
 
 if __name__ == "__main__":

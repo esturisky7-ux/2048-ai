@@ -59,8 +59,16 @@ def game_seed(base_seed: int, index: int) -> int:
         & 0xFFFFFFFFFFFFFFFF
 
 
-def play_one(agent, seed: int, move_limit: int = 200000):
-    """Play a single game with a given agent and seed."""
+class InvalidActionError(ValueError):
+    """An evaluation agent returned an action that is not legal."""
+
+
+def play_one(agent, seed: int, move_limit: int = 200000, *,
+             strict: bool = True, diagnostics: dict | None = None):
+    """Play one seeded game; reject illegal moves unless diagnostic mode is explicit."""
+    if move_limit < 1:
+        raise ValueError("move_limit must be positive")
+    invalid = 0
     rng = Random(seed)
     b = B.new_game(rng)
     score = moves = 0
@@ -71,41 +79,62 @@ def play_one(agent, seed: int, move_limit: int = 200000):
         if not legal:
             break
         a = agent.act(b)
-        nb, gained, moved = B.move(b, a)
-        if not moved:
-            # An agent must return a legal move; fall back rather than loop,
-            # but make it loud in the returned stats.
+        if type(a) is not int or a not in legal:
+            invalid += 1
+            if strict:
+                raise InvalidActionError(
+                    f"illegal action {a!r} at move {moves}, seed {seed}")
             a = legal[0]
-            nb, gained, moved = B.move(b, a)
+        nb, gained, moved = B.move(b, a)
         b = B.random_spawn(nb, rng)
         score += gained
         moves += 1
+    if diagnostics is not None:
+        diagnostics.update(invalid_actions=invalid,
+                           truncated=not B.is_game_over(b))
     return score, moves, B.max_tile(b)
 
 
 def evaluate(agent, games: int = 1000, seed: int = 987654,
              progress=None, move_limit: int = 200000,
-             stop_flag=None) -> dict:
+             stop_flag=None, *, strict: bool = True) -> dict:
     """Run ``games`` seeded games and summarise.
 
     ``progress`` is an optional callback ``(done, total)``.
     ``stop_flag`` is an optional zero-arg callable; evaluation stops early
     (reporting what it has) when it returns True.
     """
-    scores, moves_list, tiles = [], [], []
+    if games < 1 or move_limit < 1:
+        raise ValueError("games and move_limit must be positive")
+    scores, moves_list, tiles, per_game = [], [], [], []
     t0 = time.perf_counter()
     for i in range(games):
         if stop_flag is not None and stop_flag():
             break
-        s, m, t = play_one(agent, game_seed(seed, i), move_limit)
+        details = {}
+        seed_i = game_seed(seed, i)
+        s, m, t = play_one(agent, seed_i, move_limit, strict=strict,
+                           diagnostics=details)
+        # A 64-bit seed must survive browser JSON parsing without rounding.
+        per_game.append({"index": i, "seed": str(seed_i), "score": s,
+                         "moves": m, "max_tile": t, **details})
         scores.append(s)
         moves_list.append(m)
         tiles.append(t)
         if progress and (i + 1) % max(1, games // 20) == 0:
             progress(i + 1, games)
     elapsed = time.perf_counter() - t0
-    return summarise(scores, moves_list, tiles, elapsed, seed,
-                     getattr(agent, "describe", lambda: {"name": "?"})())
+    result = summarise(scores, moves_list, tiles, elapsed, seed,
+                       getattr(agent, "describe", lambda: {"name": "?"})())
+    invalid = sum(g["invalid_actions"] for g in per_game)
+    truncated = sum(g["truncated"] for g in per_game)
+    result.update(per_game=per_game, requested_games=games, move_limit=move_limit,
+                  integrity={"strict": strict, "invalid_actions": invalid,
+                             "truncated_games": truncated,
+                             "complete": len(per_game) == games,
+                             "valid": not invalid and not truncated
+                                      and len(per_game) == games})
+    return result
 
 
 def summarise(scores, moves_list, tiles, elapsed: float, seed: int,
@@ -195,4 +224,12 @@ def format_report(res: dict) -> str:
         lines.append(
             f"  {m:<6,}       {r['rate']*100:6.2f}%   "
             f"[{r['ci95'][0]*100:5.2f}%, {r['ci95'][1]*100:5.2f}%]")
+    integrity = res.get("integrity", {})
+    if integrity:
+        lines.extend(["", "evaluation integrity  " +
+                      ("PASS" if integrity["valid"] else "WARNING"),
+                      f"invalid actions       {integrity['invalid_actions']}",
+                      f"truncated games       {integrity['truncated_games']}"])
+        if not integrity["complete"]:
+            lines.append("incomplete evaluation: stopped before requested game count")
     return "\n".join(lines)

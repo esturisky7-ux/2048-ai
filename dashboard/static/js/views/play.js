@@ -145,9 +145,47 @@ App.views.play = {
     const stats = el("div", { style: "width:100%" });
     const statusLine = el("div", { class: "status-line", role: "status" }, "idle");
     const hint = el("div", { class: "note" });
+    const explanationBody = el("div", { class: "stack stack-16" });
+    let explanationFrame = null;
+    const paintExplanation = (frame) => {
+      if (frame === explanationFrame) return;
+      explanationFrame = frame;
+      const info = frame?.explanation;
+      explanationBody.replaceChildren();
+      if (!info) {
+        explanationBody.append(el("p", { class: "note" },
+          "Start a learned agent, then pause or step to inspect its decisions."));
+        return;
+      }
+      const previewNode = el("div");
+      const preview = new Board(previewNode, { max: 240 });
+      const caption = el("div", { class: "note", role: "status" },
+        "Board before this move");
+      preview.render(info.board_before);
+      const rows = info.candidates.map((c) => {
+        const chosen = c.action === info.selected;
+        const inspect = button(c.action + (chosen ? " · chosen" : ""), {
+          variant: chosen ? "default" : "outline", size: "sm",
+          onClick: () => {
+            preview.render(c.afterstate);
+            caption.textContent = `${c.action}: after sliding, before the random tile spawns`;
+          },
+        });
+        return el("tr", {}, el("td", {}, inspect), el("td", { class: "num" }, F.n(c.reward, 1)),
+          el("td", { class: "num" }, F.n(c.future_value, 1)), el("td", { class: "num" }, F.n(c.total, 1)));
+      });
+      explanationBody.append(
+        el("p", { class: "note" }, `Move ${frame.moves}: ${info.selected}. ` +
+          `Total = reward + ${info.gamma} × estimated future value (depth ${info.depth}). ` +
+          "Model estimates, not guaranteed scores. Ties prefer Up, Right, Down, Left."),
+        table(["Move / preview", ["Reward", { num: true }],
+          ["Future", { num: true }], ["Total", { num: true }]], rows),
+        el("div", { class: "stack stack-8", style: "align-items:center" }, previewNode, caption));
+    };
 
     const paintStats = (snap) => {
       const f = state.frames[state.cursor];
+      paintExplanation(f);
       stats.replaceChildren(miniStats([
         ["Score", F.n(f ? f.score : 0)],
         ["Moves", F.n(f ? f.moves : 0)],
@@ -221,6 +259,7 @@ App.views.play = {
       state.frames = []; state.cursor = 0; state.fetched = 0;
       state.done = false; state.playing = false;
       board.clear();
+      paintStats(null);
       startBtn.disabled = currentBtn.disabled = true;
       statusLine.textContent = "starting…";
       hint.textContent = "";
@@ -328,6 +367,7 @@ App.views.play = {
       el("div", { class: "col-side" }, card(
         cardHeader("Agent", "Choose who plays, with which weights and how fast."),
         cardContent(el("div", { class: "stack" },
+          demoButton(),
           field("Agent", agentSel),
           depthField, ckptField,
           field("Playback speed", speedSel),
@@ -337,6 +377,10 @@ App.views.play = {
             el("div", { class: "inline" }, startBtn, currentBtn),
             el("div", { class: "inline" }, pauseBtn, stepBtn, restartBtn, stopBtn)),
           hint))))));
+
+    this.body.append(card(cardHeader("Why This Move?",
+      "Inspect the decision that produced the displayed frame. Select a move to preview it."),
+      cardContent(explanationBody)));
 
     // Deep links: ?watch=learned&depth=1&speed=5&seed=1 starts a game on
     // load, so a particular view can be bookmarked or opened on a second
@@ -359,6 +403,10 @@ App.views.play = {
         syncAgent();
         ckptSel.value = checkpoint;
         hint.textContent = "Snapshot selected. Press Start Game to watch it play.";
+        if (App.demoCheckpoint === checkpoint) {
+          delete App.demoCheckpoint;
+          start();
+        }
       } else {
         hint.textContent = `Checkpoint ${checkpoint} is not available for run ` +
           `“${App.run}”; playing with the latest weights instead.`;
