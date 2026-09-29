@@ -142,6 +142,9 @@ App.views.evaluate = {
     const exportCsv = () => {
       const rows = [["metric", "value"],
         ["agent", res.label], ["games", res.games], ["seed", res.seed],
+        ["integrity_valid", res.integrity?.valid],
+        ["invalid_actions", res.integrity?.invalid_actions],
+        ["truncated_games", res.integrity?.truncated_games],
         ["mean_score", res.mean_score], ["median_score", res.median_score],
         ["std_score", res.std_score],
         ["ci95_low", (res.ci95_mean || [])[0]], ["ci95_high", (res.ci95_mean || [])[1]],

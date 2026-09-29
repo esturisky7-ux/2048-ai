@@ -118,8 +118,18 @@ class LearnedAgent(Agent):
             return legal[0] if legal else 0
         return a
 
+    def act_with_explanation(self, board: int):
+        if self.depth <= 1:
+            return self.policy.act_with_explanation(board)
+        details = []
+        a = self._search_act(board, details=details)
+        return a, {"board_before": B.board_to_rows(board),
+                   "gamma": self.policy.gamma, "depth": self.depth,
+                   "candidates": details,
+                   "selected": B.ACTION_NAMES[a] if a >= 0 else None}
+
     # -- optional expectimax on top of the learned values -------------------
-    def _search_act(self, board: int) -> int:
+    def _search_act(self, board: int, details=None) -> int:
         pol = self.policy
         rf = pol.reward
         pure = rf.is_pure_score
@@ -131,7 +141,12 @@ class LearnedAgent(Agent):
                 continue
             r, mx = (gained, pol.max_exp) if pure else \
                 rf.step(board, nb, gained, pol.max_exp)
-            v = r + gamma * self._chance(nb, self.depth - 1, 1.0, mx)
+            future = self._chance(nb, self.depth - 1, 1.0, mx)
+            v = r + gamma * future
+            if details is not None:
+                details.append({"action": B.ACTION_NAMES[a], "reward": r,
+                                "future_value": future, "total": v,
+                                "afterstate": B.board_to_rows(nb)})
             if v > best_v:
                 best_v, best_a, best_mx = v, a, mx
         if best_a >= 0:

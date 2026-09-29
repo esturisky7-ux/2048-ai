@@ -84,7 +84,7 @@ App.views.overview = {
         "a minute and already reaches the 512 tile. Everything runs locally; " +
         "nothing is uploaded anywhere.",
         el("div", { class: "stack stack-16", style: "align-items:center" },
-          el("div", { class: "inline", style: "justify-content:center" }, start, watch),
+          el("div", { class: "inline", style: "justify-content:center" }, start, watch, demoButton()),
           el("div", { class: "footnote" },
             "You can also watch the random, heuristic and expectimax agents right " +
             "now — they need no training.")))));

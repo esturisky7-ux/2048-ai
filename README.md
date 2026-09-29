@@ -29,6 +29,34 @@ guides for installation, training, evaluation, the control center and troublesho
 
 ---
 
+## Try the pretrained demo
+
+Download the **demo edition ZIP** from [Releases](https://github.com/esturisky7-ux/2048-ai/releases),
+extract it, and run `python3 server.py --open` (`py server.py --open` on Windows).
+Select **Try a Trained Agent** on Overview or Play. It installs a verified local
+copy into `demo-v1` and starts watching its frozen 10,000-game snapshot. Your
+existing runs are preserved. The optional compressed weights add less than 1 MB;
+no downloads or third-party requests happen inside the application.
+
+This compact 8×4 demonstration is separate from the larger agent benchmarked
+below. Its exact configuration, checkpoint checksum and held-out 200-game
+results are in [demo/manifest.json](demo/manifest.json) and
+[demo/evaluation.json](demo/evaluation.json). Source-only clones do not include
+the weights; use the demo edition ZIP for this shortcut, or train your own.
+
+In Play, **Why This Move?** shows the immediate reward, estimated future value,
+and total used for each legal move. Pause or Step to inspect the decision for
+the displayed frame, then select a direction to preview the board before the
+random tile spawns. These are model estimates, not guaranteed outcomes. Both
+the learned policy and learned search expose their actual decision scores.
+
+Evaluation now rejects illegal actions by default. JSON results retain each
+game's seed, score, move count and integrity flags. The CLI and dashboard show
+truncation and integrity status; old results are labelled as unverified.
+`--allow-invalid-moves` is diagnostic mode: fallback moves are counted and the
+result is flagged. `--move-limit N` bounds games; invalid, incomplete or
+truncated evaluations return a nonzero CLI exit status even when saved.
+
 ## Quick Start
 
 ```bash
@@ -503,7 +531,7 @@ on macOS) collapses the sidebar, and `?` lists them all.
 | **Supervised jobs** | Training and evaluation run as subprocesses with real state, progress and a graceful stop. |
 | **Play it yourself** | Human play and You-vs-AI, on the same Python engine the AI uses. |
 | **Localhost-only** | Binds to 127.0.0.1, refuses cross-origin requests, never takes a filesystem path from the browser. |
-| **Tested** | 340 tests, run on Linux, Windows and macOS by CI. |
+| **Tested** | 359 tests, run on Linux, Windows and macOS by CI. |
 
 ---
 
@@ -705,7 +733,7 @@ evaluation/   the fixed, seeded evaluation procedure and its statistics
 experiments/  runs a config, evaluates it, stores config+result together
 dashboard/    stdlib HTTP server, JSON API, static front end, live game thread
 config/       default.json plus 18 experiment configs
-tests/        340 tests: unit, integration, API, end-to-end, plus a benchmark
+tests/        359 tests: unit, integration, API, end-to-end, plus a benchmark
 docs/         architecture and command reference
 ```
 
@@ -976,7 +1004,7 @@ python3 tests/benchmark_engine.py                # throughput benchmark
 
 On Windows use `py -m unittest discover -s tests`.
 
-**340 tests.** What they actually check:
+**359 tests.** What they actually check:
 
 - **`test_engine.py`** — merge rules including the awkward cases (`2 2 2 2` →
   `4 4 . .`, `4 4 8 8` → `8 16 . .`), that a freshly merged tile cannot merge
@@ -1321,7 +1349,7 @@ Known differences that are documented rather than papered over:
 │   ├── default.json           the default configuration
 │   └── experiments/           18 experiment configs
 │
-├── tests/                     340 tests + the engine benchmark
+├── tests/                     359 tests + the engine benchmark
 ├── docs/
 │   ├── ARCHITECTURE.md        how the pieces fit together, and why
 │   ├── COMMANDS.md            command reference, with Windows equivalents

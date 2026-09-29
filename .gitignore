@@ -99,3 +99,6 @@ id_ed25519*
 # --- exceptions ------------------------------------------------------------
 # Documentation images are checked in deliberately.
 !docs/images/*.png
+
+# Optional pretrained payload ships in the demo release ZIP, not Git.
+/demo/weights.f32.gz

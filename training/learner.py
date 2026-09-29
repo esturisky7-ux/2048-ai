@@ -63,7 +63,7 @@ _NEG_INF = float("-inf")
 
 
 def best_move(b: int, max_exp: int, value, gamma: float,
-              reward: RewardFunction, move=_MOVE):
+              reward: RewardFunction, move=_MOVE, details=None):
     """The move the value function prefers from ``b``, scored as training does.
 
     Each legal move scores ``r + gamma * value(afterstate)``, where ``r`` is
@@ -85,6 +85,10 @@ def best_move(b: int, max_exp: int, value, gamma: float,
         val = value(nb)
         r = gained if pure else reward.step(b, nb, gained, max_exp)[0]
         v = r + gamma * val
+        if details is not None:
+            details.append({"action": B.ACTION_NAMES[a], "reward": r,
+                            "future_value": val, "total": v,
+                            "afterstate": B.board_to_rows(nb)})
         if v > best_v:
             best_v = v
             best = (a, nb, val, r, gained)
@@ -110,10 +114,18 @@ class GreedyPolicy:
     def new_game(self) -> None:
         self.max_exp = 0
 
-    def act(self, b: int) -> int:
+    def act_with_explanation(self, b: int):
+        """Choose once, exposing the exact scores used for this decision."""
+        details = []
+        a = self.act(b, details=details)
+        return a, {"board_before": B.board_to_rows(b), "gamma": self.gamma,
+                   "depth": 1, "candidates": details,
+                   "selected": B.ACTION_NAMES[a] if a >= 0 else None}
+
+    def act(self, b: int, details=None) -> int:
         """The move to play from ``b``, or -1 when there is none."""
         _, best = best_move(b, self.max_exp, self.net.value, self.gamma,
-                            self.reward)
+                            self.reward, details=details)
         if best is None:
             return -1
         a, nb, _, _, gained = best

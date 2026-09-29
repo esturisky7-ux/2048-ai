@@ -489,10 +489,9 @@ async function boot() {
   App.startLive();
   await App.refreshNow();
 
-  // If nothing has ever been trained, land on the welcome flow rather than an
-  // overview full of dashes.
+  // On a fresh install, show both the optional pretrained demo and training.
   if (App.status && !App.status.has_any_run && !location.hash) {
-    App.go("training");
+    App.go("overview");
   }
   installShortcuts();
 }

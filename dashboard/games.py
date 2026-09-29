@@ -118,13 +118,15 @@ class AIGameSession:
 
     # -- worker ------------------------------------------------------------
     def _append(self, board: int, score: int, moves: int, action,
-                decision_ms: float) -> None:
+                decision_ms: float, explanation=None) -> None:
         with self.lock:
             if len(self.frames) < MAX_FRAMES:
                 frame = _board_payload(board)
                 frame.update({"i": len(self.frames), "score": score,
                               "moves": moves, "action": action,
                               "decision_ms": round(decision_ms, 3)})
+                if explanation is not None:
+                    frame["explanation"] = explanation
                 self.frames.append(frame)
 
     def _run(self) -> None:
@@ -151,7 +153,11 @@ class AIGameSession:
                 if B.is_game_over(b):
                     break
                 t0 = time.perf_counter()
-                a = self.agent.act(b)
+                explanation = None
+                if hasattr(self.agent, "act_with_explanation"):
+                    a, explanation = self.agent.act_with_explanation(b)
+                else:
+                    a = self.agent.act(b)
                 decision_ms = (time.perf_counter() - t0) * 1000.0
                 self.decision_total += decision_ms
                 self.decision_count += 1
@@ -162,11 +168,13 @@ class AIGameSession:
                     if not legal:
                         break
                     a = legal[0]
+                    explanation = None  # never explain a substituted action
                     nb, gained, moved = B.move(b, a)
                 b = B.random_spawn(nb, self.rng)
                 score += gained
                 moves += 1
-                self._append(b, score, moves, B.ACTION_NAMES[a], decision_ms)
+                self._append(b, score, moves, B.ACTION_NAMES[a], decision_ms,
+                             explanation)
                 if len(self.frames) >= MAX_FRAMES:
                     break
         except Exception as e:                      # keep the server alive

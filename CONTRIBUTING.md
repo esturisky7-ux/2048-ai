@@ -85,7 +85,7 @@ python3 -m unittest tests.test_engine          # one module
 python3 tests/benchmark_engine.py              # throughput benchmark
 ```
 
-All 340 must pass before a pull request is ready. The end-to-end module drives
+All 359 must pass before a pull request is ready. The end-to-end module drives
 the real command-line entry points as subprocesses, so it is slower than the
 rest and worth running last.
 
