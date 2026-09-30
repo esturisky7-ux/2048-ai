@@ -223,11 +223,7 @@ App.views.overview = {
       cardHeader("Performance",
         ev.eval_games
           ? `Training numbers move; the evaluation average is measured on ${F.n(ev.eval_games)} fixed games.`
-          : "Training numbers move; evaluation averages come from fixed seeded games.",
-        tooltip("Rolling numbers come from recent training games and move as " +
-                "the agent learns. Evaluation numbers come from a frozen agent " +
-                "replaying a fixed set of seeded games — those are the " +
-                "comparable ones.")),
+          : "Training numbers move; evaluation averages come from fixed seeded games."),
       cardContent(el("div", { class: "stack" },
         stats([
           statTile("Recent average", F.compact(roll.mean_score),
