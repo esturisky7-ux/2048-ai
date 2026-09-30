@@ -300,7 +300,6 @@ def list_evaluations(run_name: str, limit: int = 200) -> list[dict]:
 # UI settings
 # ---------------------------------------------------------------------------
 DEFAULT_SETTINGS = {
-    "theme": "dark",                 # dark | light | system
     "refresh_ms": 2000,              # dashboard poll interval
     "playback_speed": 1,             # default live-game speed multiplier
     "eval_games": 200,               # default evaluation length
@@ -312,7 +311,7 @@ DEFAULT_SETTINGS = {
 
 # Only these keys are accepted from the browser, with these types.
 SETTING_TYPES = {
-    "theme": str, "refresh_ms": int, "playback_speed": float,
+    "refresh_ms": int, "playback_speed": float,
     "eval_games": int, "workers": int, "confirm_destructive": bool,
     "show_tooltips": bool, "compact_numbers": bool,
 }
@@ -353,8 +352,6 @@ def save_settings(patch: dict) -> dict:
                 s[k] = str(v)[:40]
         except (TypeError, ValueError):
             continue
-    s["theme"] = s["theme"] if s["theme"] in ("dark", "light", "system") \
-        else "dark"
     s["refresh_ms"] = max(500, min(int(s["refresh_ms"]), 30000))
     s["eval_games"] = max(1, min(int(s["eval_games"]), 100000))
     s["workers"] = max(1, min(int(s["workers"]), 64))

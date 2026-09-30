@@ -437,27 +437,23 @@ class TestSettings(SandboxedRoots):
                              "the default should not consume every core")
 
     def test_unknown_keys_are_ignored_not_stored(self):
-        saved = store.save_settings({"theme": "light", "evil": "payload",
+        saved = store.save_settings({"evil": "payload",
                                      "__proto__": "nope"})
-        self.assertEqual(saved["theme"], "light")
         self.assertNotIn("evil", saved)
         self.assertNotIn("__proto__", saved)
 
     def test_values_are_clamped_to_sane_ranges(self):
         s = store.save_settings({"refresh_ms": 1, "eval_games": 10 ** 9,
-                                 "workers": 9999, "playback_speed": -5,
-                                 "theme": "rainbow"})
+                                 "workers": 9999, "playback_speed": -5})
         self.assertGreaterEqual(s["refresh_ms"], 500)
         self.assertLessEqual(s["eval_games"], 100000)
         self.assertLessEqual(s["workers"], 64)
         self.assertGreaterEqual(s["playback_speed"], 0.0)
-        self.assertEqual(s["theme"], "dark")
 
     def test_settings_round_trip_through_disk(self):
-        store.save_settings({"eval_games": 321, "theme": "light"})
+        store.save_settings({"eval_games": 321})
         loaded = store.load_settings()
         self.assertEqual(loaded["eval_games"], 321)
-        self.assertEqual(loaded["theme"], "light")
 
     def test_bad_types_do_not_raise(self):
         s = store.save_settings({"refresh_ms": "soon", "workers": None,

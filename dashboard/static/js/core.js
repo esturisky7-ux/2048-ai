@@ -232,7 +232,7 @@ const App = {
   run: "default",
   status: null,
   settings: {
-    theme: "dark", refresh_ms: 2000, playback_speed: 1, eval_games: 200,
+    refresh_ms: 2000, playback_speed: 1, eval_games: 200,
     workers: 1, confirm_destructive: true, show_tooltips: true,
     compact_numbers: true,
   },
@@ -380,23 +380,6 @@ const App = {
     else this.route();
   },
 
-  /* -- theme ------------------------------------------------------------ */
-  /* "dark", "light" or "system". The class on <html> is what the stylesheet
-   * reads; localStorage lets boot.js restore it before the first paint. */
-  applyTheme(theme) {
-    const wanted = theme === "system"
-      ? (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
-      : theme;
-    document.documentElement.classList.toggle("dark", wanted !== "light");
-    try { localStorage.setItem("theme", theme); } catch (_) { }
-    const toggle = $("#theme-toggle");
-    if (toggle) toggle.replaceChildren(icon(wanted === "light" ? "moon" : "sun"));
-    // Chart colours come from CSS custom properties, so redraw them.
-    if (typeof Chart !== "undefined") requestAnimationFrame(() => Chart.redrawAll());
-  },
-
-  isDark() { return document.documentElement.classList.contains("dark"); },
-
   /* -- routing ---------------------------------------------------------- */
   route() {
     const hash = location.hash.replace(/^#\/?/, "") || "overview";
@@ -478,10 +461,6 @@ async function boot() {
     const s = await API.get("/api/settings");
     App.settings = { ...App.settings, ...s.settings };
   } catch (_) { /* defaults are fine */ }
-  App.applyTheme(App.settings.theme);
-  matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
-    if (App.settings.theme === "system") App.applyTheme("system");
-  });
 
   buildNav();
   window.addEventListener("hashchange", () => App.route());

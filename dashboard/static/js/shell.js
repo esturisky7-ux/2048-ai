@@ -1,6 +1,6 @@
 /* Shell wiring: the pieces of chrome that live outside any single view —
  * the sidebar (collapsible to an icon rail, or a sheet on small screens), the
- * theme toggle, the version footer and the lost-server warning.
+ * version footer and the lost-server warning.
  *
  * Loaded last so every view has registered itself before boot() runs the
  * router (core.js waits for DOMContentLoaded, which fires after all of these).
@@ -88,16 +88,6 @@ document.addEventListener("DOMContentLoaded", () => {
       menuBtn.focus();
     }
   });
-
-  // The header button flips between light and dark. "Match the system" is
-  // still available on the Settings page.
-  $("#theme-toggle").onclick = async () => {
-    const next = App.isDark() ? "light" : "dark";
-    App.settings.theme = next;
-    App.applyTheme(next);
-    try { await API.post("/api/settings", { settings: { theme: next } }); }
-    catch (_) { /* the visual change already happened */ }
-  };
 
   // Version from every status frame.
   const paintFoot = (version) => {

@@ -497,8 +497,7 @@ detail.
 is `http.server`; the front end is hand-written HTML, CSS and JavaScript that
 loads nothing from a CDN.
 
-**The interface.** A light and a dark theme (the sun/moon button in the header,
-or *Match the system* in Settings), a sidebar that collapses to an icon rail
+**The interface.** A dark theme, a sidebar that collapses to an icon rail
 (its button, or **Ctrl+B** / **⌘B**) and becomes a slide-over menu on phones,
 and cards that stack on narrow windows. The look is one stylesheet,
 `dashboard/static/css/app.css`, built on CSS custom properties. The Geist and

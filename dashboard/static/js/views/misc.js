@@ -177,12 +177,6 @@ App.views.settings = {
 
   mount(root) {
     const s = App.settings;
-    const theme = selectInput("s-theme", [
-      { value: "dark", label: "Dark" },
-      { value: "light", label: "Light" },
-      { value: "system", label: "Match the system" },
-    ], s.theme);
-    theme.onchange = () => { App.applyTheme(theme.value); };
     const refresh = selectInput("s-refresh", [
       { value: 1000, label: "1 second" },
       { value: 2000, label: "2 seconds" },
@@ -206,7 +200,6 @@ App.views.settings = {
       try {
         const r = await API.post("/api/settings", {
           settings: {
-            theme: theme.value,
             refresh_ms: Number(refresh.value),
             playback_speed: Number(speed.value),
             eval_games: Number(evalGames.value),
@@ -217,7 +210,6 @@ App.views.settings = {
           },
         });
         App.settings = r.settings;
-        App.applyTheme(App.settings.theme);
         App.startLive();
         status.textContent = "Saved.";
         Toast.ok("Settings saved");
@@ -232,7 +224,6 @@ App.views.settings = {
         const d = await API.get("/api/settings");
         const r = await API.post("/api/settings", { settings: d.defaults });
         App.settings = r.settings;
-        App.applyTheme(App.settings.theme);
         Toast.ok("Defaults restored");
         App.route();
       } catch (e) { Toast.error("Could not reset", e.message); }
@@ -248,7 +239,6 @@ App.views.settings = {
           "sent anywhere, and no credentials are stored."),
         cardContent(el("div", { class: "stack stack-24" },
           group("Appearance", [
-            field("Theme", theme),
             field("Dashboard refresh", refresh,
               "how often to poll when live updates are unavailable"),
             field("Numbers", compactBox.node),
