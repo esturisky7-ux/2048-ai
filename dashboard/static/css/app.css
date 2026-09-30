@@ -203,6 +203,8 @@ svg.icon { flex: none; display: block; }
   display: flex; align-items: center; gap: 8px; padding: 4px 8px; min-width: 0;
   font-size: 12px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden;
 }
+a.foot { text-decoration: none; border-radius: var(--radius-md); }
+a.foot:hover { color: var(--foreground); background: var(--accent); }
 .sidebar-footer .foot span { overflow: hidden; text-overflow: ellipsis; }
 
 /* Collapsed to an icon rail (desktop only). */
