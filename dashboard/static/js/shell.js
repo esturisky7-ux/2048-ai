@@ -99,15 +99,12 @@ document.addEventListener("DOMContentLoaded", () => {
     catch (_) { /* the visual change already happened */ }
   };
 
-  // Version from every status frame; the branch once, from the diagnostics.
-  let branch = null;
+  // Version from every status frame.
   const paintFoot = (version) => {
-    const text = [version ? `v${version}` : null, branch].filter(Boolean).join(" · ");
-    if (text) $("#foot-version").textContent = text;
+    if (version) $("#foot-version").textContent = `v${version}`;
   };
   App.onStatus((s) => paintFoot(s.version));
   API.get("/api/system").then((s) => {
-    branch = s.project?.git?.branch || null;
     paintFoot(s.project?.version || App.status?.version);
   }).catch(() => { });
 
