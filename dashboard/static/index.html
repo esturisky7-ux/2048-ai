@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark light">
+<meta name="color-scheme" content="dark">
 <title>2048 AI Control Center</title>
 <link rel="preload" href="/static/fonts/Geist-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/css/app.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='25' fill='%23f9c230'/><text y='64' x='50' text-anchor='middle' font-size='36' font-family='sans-serif' font-weight='700' fill='%233b2301'>2048</text></svg>">
-<!-- Applies the saved theme and sidebar state before the first paint. -->
+<!-- Applies the saved sidebar state before the first paint. -->
 <script src="/static/js/boot.js"></script>
 </head>
 <body>
@@ -26,7 +26,7 @@
     </div>
     <nav class="nav" aria-label="Sections"></nav>
     <div class="sidebar-footer">
-      <div class="foot" id="sidebar-foot" title="Version and branch"><span id="foot-version">—</span></div>
+      <a class="foot" id="sidebar-foot" title="View the project on GitHub" href="https://github.com/esturisky7-ux/2048-ai/tree/main" target="_blank" rel="noopener noreferrer"><span id="foot-version">—</span></a>
     </div>
   </aside>
 
@@ -42,8 +42,6 @@
       <div class="topbar-right">
         <div id="page-actions" class="page-actions"></div>
         <span class="badge badge-outline status-badge" id="global-status" role="status"><i></i><span class="status-label">—</span></span>
-        <button class="btn btn-ghost btn-icon btn-sm" id="theme-toggle" type="button"
-                title="Toggle theme" aria-label="Toggle light and dark theme"></button>
       </div>
     </header>
     <main class="content" id="view"></main>

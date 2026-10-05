@@ -72,8 +72,8 @@ change a page:
   `css/app.css`.
 - Use the colour tokens (`var(--foreground)`, `var(--muted-foreground)`,
   `var(--chart-1)` … `var(--chart-5)` and friends) instead of literal colours,
-  so both themes keep working.
-- Check it in the light and the dark theme, and at a phone-sized width.
+  so the theme stays consistent.
+- Check it at a phone-sized width.
 - Need an icon? Copy its Lucide paths into `js/icons.js`; do not load an icon
   font or library.
 
