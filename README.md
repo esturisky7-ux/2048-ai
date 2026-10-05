@@ -469,7 +469,7 @@ use.
 |---|---|
 | **Overview** | Live status, the current run, records, achievement rates, and a training-progress chart with seven views — score, tile rates, evaluation, evaluation tile rates, highest tile, speed and games — picked with a switcher that remembers your choice. Hover any chart (or tab to it and use the arrow keys) for the exact value and the game number it came from. |
 | **Training** | Start a new run with sensible defaults (basic and advanced settings), or continue an existing one — "train 10,000 more", a custom amount, or continuously. Live throughput, ETA, and a **graceful stop** that finishes the current game and writes a checkpoint. |
-| **Play** | Watch any agent play, with pause, single-step, restart and speeds from 0.25× to maximum. Play 2048 yourself with the arrow keys, WASD, swipe or on-screen buttons. Or take the AI on in **You vs AI**. |
+| **Play** | Watch any agent play, with pause, single-step, restart and speeds from 0.25× to maximum. Play 2048 yourself with the arrow keys, WASD, swipe or on-screen buttons. |
 | **Evaluate** | Run a fixed-seed evaluation on any agent or saved checkpoint, watch its progress, and get the mean with a 95% confidence interval, percentiles and Wilson intervals for every tile rate. Export JSON or CSV. |
 | **Compare** | Several agents over the identical seeded games, with the confidence intervals drawn so overlap is visible rather than hidden. |
 | **Experiments** | Run any of the 18 shipped configurations and compare the results, with the sample size shown next to every number. |
@@ -928,13 +928,11 @@ http://127.0.0.1:8000/?watch=learned&depth=1&speed=5&seed=1#/play/watch
 ### Play it yourself
 
 **Play ▸ Play Yourself** gives you the board, with arrow keys, WASD, swipe or
-on-screen buttons. **You vs AI** lets you play a seeded game and then watches
-the trained agent play the same one.
+on-screen buttons.
 
 Both use the **Python engine**, not a second implementation in JavaScript —
-your game follows exactly the rules the AI trains on. (One game each is for
-fun, not a measurement; [Evaluate](#evaluating-an-agent) is how agents are
-actually compared.)
+your game follows exactly the rules the AI trains on.
+([Evaluate](#evaluating-an-agent) is how agents are actually compared.)
 
 ---
 

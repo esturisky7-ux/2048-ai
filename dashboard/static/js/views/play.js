@@ -50,14 +50,14 @@ function bindSwipe(node, move) {
 
 App.views.play = {
   title: "Play",
-  subtitle: "Watch the AI, play yourself, or compare the two",
+  subtitle: "Watch the AI or play yourself",
 
   mount(root, { args }) {
     this.root = root;
-    this.tab = ["watch", "human", "versus"].includes(args[0]) ? args[0] : "watch";
+    this.tab = ["watch", "human"].includes(args[0]) ? args[0] : "watch";
     this.cleanups = [];
-    const tabList = tabs([["watch", "Watch the AI"], ["human", "Play Yourself"],
-                          ["versus", "You vs AI"]], this.tab, (id, viaKeyboard) => {
+    const tabList = tabs([["watch", "Watch the AI"], ["human", "Play Yourself"]],
+                         this.tab, (id, viaKeyboard) => {
       // Arrow keys move between tabs, so keep focus there; after a click it
       // is released, and the arrow keys go back to playing.
       this._focusTab = viaKeyboard;
@@ -71,7 +71,6 @@ App.views.play = {
     this.body = el("div", { class: "stack stack-16" });
     root.append(this.body);
     if (this.tab === "human") this.mountHuman();
-    else if (this.tab === "versus") this.mountVersus();
     else this.mountWatch(args[1] ? safeDecode(args[1]) : "");
   },
 
@@ -523,172 +522,5 @@ App.views.play = {
             "Every move is applied by the Python engine, so your game follows " +
             "exactly the rules the AI trains on.")))))));
     newGame();
-  },
-
-  /* =============================================================== VERSUS */
-  mountVersus() {
-    const st = this.versus = { seed: null, human: null, ai: null, aiSession: null };
-    const MAX = 360;
-
-    const humanBoardNode = el("div");
-    const humanBoard = new Board(humanBoardNode, { max: MAX });
-    const aiBoardNode = el("div");
-    const aiBoard = new Board(aiBoardNode, { max: MAX });
-    const humanStats = el("div", { style: "width:100%" });
-    const aiStats = el("div", { style: "width:100%" });
-    const resultCard = card();
-    const note = el("div", { class: "note", role: "status" });
-    let live = { score: 0, moves: 0, max_tile: 0, elapsed: 0 };
-
-    let session = null, busy = false, humanOver = false;
-
-    const statPairs = (s) => [["Score", F.n(s.score)], ["Moves", F.n(s.moves)],
-                              ["Max tile", F.n(s.max_tile)], ["Time", F.dur(s.elapsed)]];
-
-    const paintHuman = (s) => {
-      humanBoard.render(s.board);
-      humanStats.replaceChildren(miniStats(statPairs(s), MAX));
-      live = { score: s.score, moves: s.moves, max_tile: s.max_tile, elapsed: s.elapsed };
-      if (s.game_over && !humanOver) {
-        humanOver = true;
-        st.human = { ...live };
-        note.textContent = "Your game is done. Now the AI plays the same seeded game…";
-        runAI();
-      }
-      paintResult();
-    };
-
-    const move = async (direction) => {
-      if (!session || busy || humanOver) return;
-      busy = true;
-      try { paintHuman(await API.post(`/api/game/${session}/move`, { direction })); }
-      catch (e) { Toast.error("Move failed", e.message); }
-      finally { busy = false; }
-    };
-
-    const runAI = async () => {
-      try {
-        const r = await API.post("/api/game/ai/start",
-          { agent: "learned", run: App.run, depth: 1, seed: st.seed });
-        st.aiSession = r.session.id;
-      } catch (e) {
-        note.textContent = "";
-        Toast.error("The AI could not play", e.message);
-        paintResult();
-        return;
-      }
-      let fetched = 0;
-      const frames = [];
-      const aiSession = st.aiSession;     // a New Match retires this loop
-      const poll = async () => {
-        if (st.aiSession !== aiSession) return;
-        let snap;
-        // Every fetched frame is shown at once (the board jumps to the
-        // latest), so everything fetched counts as displayed.
-        try { snap = await API.get(`/api/game/${aiSession}`, { since: fetched, cursor: fetched }); }
-        catch (_) { setTimeout(poll, 500); return; }
-        if (st.aiSession !== aiSession) return;
-        if (snap.frames?.length) { frames.push(...snap.frames); fetched += snap.frames.length; }
-        const last = frames[frames.length - 1];
-        if (last) {
-          aiBoard.render(last.board);
-          aiStats.replaceChildren(miniStats(statPairs({ ...last, elapsed: snap.elapsed }), MAX));
-        }
-        if (snap.done) {
-          st.ai = last ? { score: last.score, moves: last.moves,
-                           max_tile: last.max_tile, elapsed: snap.elapsed } : null;
-          note.textContent = "";
-          paintResult();
-          return;
-        }
-        setTimeout(poll, 260);
-      };
-      poll();
-    };
-
-    /* The results table: your live numbers, then the AI's once it has played. */
-    const paintResult = () => {
-      const a = st.human || live, b = st.ai;
-      const line = (label, key, fmt = F.n, higherWins = true) => {
-        const mine = a[key], theirs = b?.[key];
-        const cmp = b && st.human ? (higherWins ? mine - theirs : theirs - mine) : 0;
-        return el("tr", {},
-          el("td", {}, label),
-          el("td", { class: `num${cmp > 0 ? " strong" : ""}` }, fmt(mine)),
-          el("td", { class: `num${cmp < 0 ? " strong" : ""}` }, b ? fmt(theirs) : "—"));
-      };
-      const again = button("New Match", { variant: "outline", size: "sm", icon: "rotate-ccw",
-                                          onClick: start });
-      fillCard(resultCard, {
-        title: "You vs AI",
-        description: st.seed === null ? "Starting a match…"
-          : `Both boards use seed ${st.seed}, so every tile spawn is identical.`,
-        action: again,
-      },
-      el("div", { class: "stack stack-16" },
-        table(["", ["You", { num: true }], ["Learned AI", { num: true }]], [
-          line("Score", "score"),
-          line("Highest tile", "max_tile"),
-          line("Moves", "moves"),
-          line("Duration", "elapsed", (v) => F.dur(v), false),
-          el("tr", {}, el("td", {}, "Same seed"),
-            el("td", { class: "num muted" }, st.seed ?? "—"),
-            el("td", { class: "num muted" }, st.seed ?? "—")),
-        ]),
-        note,
-        el("div", { class: "footnote" },
-          "One game each, from the same starting seed. 2048 scores vary " +
-          "enormously game to game, so this is for fun — it is not a " +
-          "measurement. The ",
-          el("a", { href: "#/evaluate" }, "Evaluate"),
-          " page compares agents properly, over hundreds of seeded games with " +
-          "confidence intervals.")));
-    };
-
-    const start = async () => {
-      st.human = st.ai = null;
-      humanOver = false;
-      live = { score: 0, moves: 0, max_tile: 0, elapsed: 0 };
-      if (st.aiSession) {
-        API.post(`/api/game/${st.aiSession}/control`, { action: "stop" }).catch(() => { });
-        st.aiSession = null;
-      }
-      if (session) API.post(`/api/game/${session}/control`, { action: "stop" }).catch(() => { });
-      aiBoard.clear();
-      aiStats.replaceChildren(miniStats(statPairs(live), MAX));
-      st.seed = Math.floor(Math.random() * 1e9);
-      try {
-        const r = await API.post("/api/game/human/start", { seed: st.seed });
-        session = r.session.id;
-        note.textContent = "Play your game. When it ends, the AI plays the same seed.";
-        paintHuman(r.session);
-      } catch (e) { Toast.error("Could not start", e.message); }
-    };
-
-    const onKey = moveKeyHandler(move);
-    document.addEventListener("keydown", onKey);
-    this.cleanups.push(() => document.removeEventListener("keydown", onKey));
-    this.cleanups.push(() => {
-      if (session) API.post(`/api/game/${session}/control`, { action: "stop" }).catch(() => { });
-      if (st.aiSession) API.post(`/api/game/${st.aiSession}/control`, { action: "stop" }).catch(() => { });
-      st.aiSession = null;
-    });
-    bindSwipe(humanBoardNode, move);
-
-    const boardCard = (title, description, boardNode, statsNode) => card(
-      cardHeader(title, description),
-      cardContent(el("div", { class: "stack stack-16", style: "align-items:center" },
-        boardNode, statsNode)));
-
-    this.body.replaceChildren(
-      el("div", { class: "row" },
-        el("div", { class: "col-half" },
-          boardCard("You", "Arrow keys, WASD or swipe.", humanBoardNode, humanStats)),
-        el("div", { class: "col-half" },
-          boardCard("Learned AI", "Plays the same seed as soon as your game ends.",
-            aiBoardNode, aiStats))),
-      resultCard);
-    paintResult();
-    start();
   },
 };
