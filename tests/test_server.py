@@ -148,8 +148,11 @@ class TestStatic(ServerTest):
         import re
         _, html, _ = self.get("/")
         _, css, _ = self.get("/static/css/app.css")
-        self.assertEqual(re.findall(r'(?:src|href)="(?:https?:)?//[^"]*"',
-                                    html.decode()), [])
+        # Resources the page loads; a plain <a> link out (the GitHub link in
+        # the sidebar) loads nothing and is fine.
+        self.assertEqual(re.findall(
+            r'<(?:script|link|img|iframe|source|video|audio)\b[^>]*'
+            r'\b(?:src|href)="(?:https?:)?//[^"]*"', html.decode()), [])
         self.assertEqual(re.findall(r'(?:url\(|@import)\s*["\']?(?:https?:)?//',
                                     css.decode()), [])
 
