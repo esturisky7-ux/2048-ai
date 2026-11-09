@@ -1,0 +1,51 @@
+# systemd unit for a long, unattended training run. This is a template: it has
+# two placeholders, for the user to run as and for the project folder, which
+# the install commands in docs/LONG_RUNS.md fill in.
+#
+# Enabled, it starts again after every reboot and carries on from the last
+# checkpoint, and it is restarted 30 seconds after a failure (a worker killed
+# by the OOM killer, say). It is not restarted after a normal stop, or once
+# TARGET_GAMES has been reached.
+#
+# systemd does not allow a comment at the end of a setting's line, so the
+# notes are all on lines of their own.
+
+[Unit]
+Description=2048 AI training run
+After=local-fs.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@DIR@
+
+# The run's name, and how many workers: "auto" is one per usable CPU.
+Environment=RUN=main
+Environment=WORKERS=auto
+# Stop by itself at this many games in total (leave it out for no end).
+#Environment=TARGET_GAMES=5000000
+# Keep the runs on another disk.
+#Environment=AI2048_HOME=/mnt/disks/data/2048-ai
+
+# Extra train.py options go after the script. On a machine with many CPUs the
+# periodic evaluation (one core working while every worker waits) is the
+# largest serial cost, so make it rare; a snapshot is a cheap safety net.
+ExecStart=@DIR@/deploy/long-run.sh --eval-every 100000 --snapshot-every 500000
+
+Restart=on-failure
+RestartSec=30
+
+# Do NOT change KillMode. By default systemd signals every process in the
+# unit at once, and a training worker keeps SIGTERM's default action (that is
+# how the trainer ends a worker that will not stop), so it would die in the
+# middle of a game and the stop would be reported as a failure. "mixed" sends
+# SIGTERM to the trainer alone, which asks its workers to finish their game,
+# writes a checkpoint and exits; anything still left when time runs out gets
+# SIGKILL.
+KillMode=mixed
+KillSignal=SIGTERM
+# A Spot VM is given about 30 seconds to shut down; stay inside that.
+TimeoutStopSec=25
+
+[Install]
+WantedBy=multi-user.target

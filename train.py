@@ -6,11 +6,19 @@ Examples (write ``python`` instead of ``python3`` on Windows):
     python3 train.py --games 100000        train 100k games, then stop
     python3 train.py --resume              continue where you left off
     python3 train.py --resume --workers 2  use two CPU cores
+    python3 train.py --workers auto        use every CPU this process may use
     python3 train.py --list-runs           what has been trained so far
     python3 train.py --config baseline --run baseline
 
-Training checkpoints periodically and always saves on exit, so Ctrl-C is a
-safe way to stop. See README.md for the full story.
+For a long run that must survive restarts, this one command both starts a run
+and continues it, and stops by itself at a total number of games:
+
+    python3 train.py --run main --workers auto --resume-if-exists \\
+                     --target-games 5000000
+
+Training checkpoints periodically and always saves on exit, so Ctrl-C (or a
+closed terminal, or ``kill``) is a safe way to stop. See README.md for the
+full story and docs/LONG_RUNS.md for running it on a Linux server or VM.
 """
 
 from __future__ import annotations
@@ -23,7 +31,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from training.config import load_config, list_experiments   # noqa: E402
-from training.checkpoint import Run, list_runs, python_command   # noqa: E402
+from training.checkpoint import (Run, available_cpus, list_runs,   # noqa: E402
+                                python_command)
 from training.ntuple import TUPLE_SETS                      # noqa: E402
 from version import version_string                          # noqa: E402
 
@@ -115,8 +124,20 @@ def self_check() -> int:
     return 0
 
 
+def workers_arg(text: str):
+    """``--workers`` takes a count, or ``auto`` for one per available CPU."""
+    if text.strip().lower() == "auto":
+        return "auto"
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"{text!r} is not a worker count: use a whole number, or "
+            f"'auto'") from None
+
+
 def main() -> int:
-    cores = os.cpu_count() or 1
+    cores = available_cpus()
     py = python_command()
     p = argparse.ArgumentParser(
         prog=f"{py} train.py",
@@ -127,13 +148,22 @@ def main() -> int:
                    help="games to play this session (0 = until Ctrl-C)")
     p.add_argument("--resume", action="store_true",
                    help="continue an existing run from its checkpoint")
+    p.add_argument("--resume-if-exists", action="store_true",
+                   help="continue the run if it has a checkpoint, otherwise "
+                        "start it: one command that is safe to run again "
+                        "after a crash, a reboot or a preempted VM")
+    p.add_argument("--target-games", type=int, default=0, metavar="N",
+                   help="train until the run has played N games in total, "
+                        "across however many sessions that takes; exits "
+                        "at once if it already has (instead of --games, "
+                        "which counts this session only)")
     p.add_argument("--run", default=None,
                    help="run name (default: 'default', or the config's)")
     p.add_argument("--config", default=None,
                    help="config file, or a name from config/experiments/")
-    p.add_argument("--workers", type=int, default=1,
-                   help=f"training processes (this machine has {cores} "
-                        f"CPU core{'s' if cores != 1 else ''})")
+    p.add_argument("--workers", type=workers_arg, default=1,
+                   help=f"training processes, or 'auto' for one per CPU this "
+                        f"process may use (that is {cores} here)")
     p.add_argument("--tuple-set", default=None, choices=sorted(TUPLE_SETS),
                    help="n-tuple network shape (new runs only)")
     p.add_argument("--alpha", type=float, default=None, help="learning rate")
@@ -183,8 +213,16 @@ def main() -> int:
         print("\n".join(names) if names else "no experiment configs")
         return 0
 
+    if args.target_games < 0:
+        p.error("--target-games must be a positive number of games")
+    if args.games and args.target_games:
+        p.error("--games counts this session and --target-games counts the "
+                "whole run: use one of them")
+
+    if args.workers == "auto":
+        args.workers = cores
     if args.workers > cores:
-        print(f"note: this machine has {cores} CPU core"
+        print(f"note: this process may use {cores} CPU core"
               f"{'s' if cores != 1 else ''}; --workers {args.workers} "
               f"will oversubscribe it and is likely to be slower.")
 
@@ -192,9 +230,14 @@ def main() -> int:
     if args.run:
         overrides["run"] = args.run
 
+    # The run a resume would continue: the one named, else the config's.
+    named_run = args.run or (load_config(args.config).get("run", "default")
+                             if args.config else "default")
+    if args.resume_if_exists and not args.resume:
+        args.resume = Run(named_run).exists()
+
     if args.resume:
-        run_name = args.run or (load_config(args.config).get("run", "default")
-                                if args.config else "default")
+        run_name = named_run
         if not Run(run_name).exists():
             print(f"error: no checkpoint for run {run_name!r}. "
                   f"Start one with:  {py} train.py --games 20000",
@@ -209,9 +252,13 @@ def main() -> int:
     from training.runlock import RunBusy
     from training.trainer import Trainer, TrainingError
     try:
+        # Reserve the weight file's disk space now (where the OS can), so a
+        # full disk stops the run here, with a message, and not hours in with
+        # a SIGBUS from the memory map.
         trainer = Trainer(run_name, cfg_over, resume=args.resume,
-                          quiet=args.quiet, purpose="training, train.py")
-    except RunBusy as e:
+                          quiet=args.quiet, purpose="training, train.py",
+                          preallocate=not args.evaluate_now)
+    except (RunBusy, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
@@ -221,7 +268,16 @@ def main() -> int:
             trainer.evaluate_now()
             trainer.save(note="manual evaluation")
             return 0
-        trainer.train(n_games=args.games, workers=max(1, args.workers))
+        n_games = args.games
+        if args.target_games:
+            n_games = args.target_games - trainer.game_index
+            if n_games <= 0:
+                if not args.quiet:
+                    print(f"run {run_name!r} has played "
+                          f"{trainer.game_index:,} games, which meets the "
+                          f"target of {args.target_games:,}; nothing to do")
+                return 0
+        trainer.train(n_games=n_games, workers=max(1, args.workers))
     except TrainingError as e:
         # Printed last, so it is the line a supervisor (the control center's
         # job list) reports as the reason the job failed.

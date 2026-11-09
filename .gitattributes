@@ -5,6 +5,7 @@
 # Shell scripts must keep LF even on a Windows checkout: with CRLF, running
 # ./start.sh fails with "/usr/bin/env: 'bash\r': No such file or directory".
 *.sh text eol=lf
+*.service text eol=lf
 
 # Never diff or convert these.
 *.png binary

@@ -57,6 +57,23 @@ def python_command() -> str:
     return "python" if os.name == "nt" else "python3"
 
 
+def available_cpus() -> int:
+    """How many CPUs this process may actually run on.
+
+    ``os.cpu_count()`` reports the machine's CPUs and ignores ``taskset``, a
+    systemd unit's ``CPUAffinity=`` and a container's cpuset, so on a shared
+    or restricted host it overstates what ``--workers`` can use and "one
+    worker per core" oversubscribes. Linux's scheduler honours the affinity
+    mask, which ``os.sched_getaffinity`` reports; macOS and Windows have no
+    such call and fall back to the machine's count.
+    """
+    try:
+        n = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        n = 0
+    return n or os.cpu_count() or 1
+
+
 def display_path(path, start=None) -> str:
     """A short path for printing, falling back to the absolute one.
 
@@ -72,20 +89,28 @@ def display_path(path, start=None) -> str:
         return os.fspath(path)
 
 
-def atomic_write_json(path, obj) -> None:
+def atomic_write_json(path, obj, durable: bool = True) -> None:
     """Write JSON so readers never see a partial file.
 
     ``os.replace`` is atomic on POSIX and on Windows, but Windows also refuses
     to replace a file another process happens to have open -- which the
     dashboard briefly does every poll. A few quick retries turn that race into
     a delay instead of a lost checkpoint.
+
+    ``durable`` also forces the bytes to disk before the rename, so the file
+    survives a power cut. That is what a checkpoint wants and what a progress
+    heartbeat does not: an fsync is a journal commit, which on a network disk
+    can take many milliseconds, and the heartbeat writes one every few seconds
+    for as long as a run lasts. The rename keeps even a non-durable write
+    whole for every reader.
     """
     path = os.fspath(path)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
         f.flush()
-        os.fsync(f.fileno())
+        if durable:
+            os.fsync(f.fileno())
     for attempt in range(5):
         try:
             os.replace(tmp, path)
@@ -167,9 +192,9 @@ class Run:
         return read_json(self.meta_path)
 
     def write_status(self, status: dict) -> None:
-        """Small file the dashboard polls; safe to lose."""
+        """Small file the dashboard polls; safe to lose, so never fsynced."""
         try:
-            atomic_write_json(self.status_path, status)
+            atomic_write_json(self.status_path, status, durable=False)
         except OSError:
             pass
 
