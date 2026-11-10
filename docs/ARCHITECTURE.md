@@ -287,7 +287,10 @@ stronger, so a neural network would be a worse tool chosen for fashion.
 The trade is memory: 268 MB of weights for a problem a neural network could
 address with a few hundred kilobytes of parameters. On a laptop with 8 GB of
 RAM that is an easy trade, and the file is created sparse so it only grows as
-positions are actually visited.
+positions are actually visited. A long run on Linux asks for the space up front
+instead (`posix_fallocate`): a write through a memory map that cannot get a disk
+block is not an exception but a SIGBUS that kills the process wherever it
+happens to be, so a full disk should be a refusal to start.
 
 ---
 
@@ -400,7 +403,9 @@ file on disk is almost current.
 temporary file, `fsync`'d, and then `os.replace`'d over the real one. That
 rename is atomic on every supported OS, so a reader never sees a half-written
 file. On Windows the replace can fail transiently if a reader has the file
-open, so the writer retries briefly rather than losing the checkpoint.
+open, so the writer retries briefly rather than losing the checkpoint. The
+status file the dashboard polls is written the same way but not `fsync`'d: it
+is rewritten every few seconds for the whole run and is safe to lose.
 
 `history.jsonl` is append-only and flushed per row: a crash loses at most the
 row being written, and the reader tolerates a torn final line rather than
@@ -409,6 +414,20 @@ discarding the file.
 Ctrl-C is not an interruption to be survived but a supported way to stop: the
 handler sets a flag, the loop finishes the current game, and the `finally`
 block checkpoints. A second Ctrl-C exits immediately.
+
+SIGTERM (`kill`, `systemctl stop`, a VM shutting down) takes the same path, and
+so does SIGHUP, which is how a POSIX terminal says it has gone away: its default
+action would end the trainer on the spot with no checkpoint. Two details matter
+for a run left alone on a server. A hangup is usually delivered more than once
+(the kernel's, then the shell's), so a repeated SIGHUP is not read as the second
+Ctrl-C. And a SIGHUP that was being ignored when training started is left
+ignored, because that is what `nohup` does and means. Workers ignore SIGINT and
+SIGHUP — the parent decides when they stop — but keep SIGTERM's default action,
+which is how the parent ends a worker that will not; that is why the systemd unit
+uses `KillMode=mixed`. Progress lines go through one function that goes quiet
+instead of raising when stdout is gone (a closed terminal, a pipe whose reader
+exited), because a run that has trained for hours should not die for want of
+somewhere to print.
 
 **Snapshots** have their own schedule, independent of checkpointing: one is
 taken whenever the game count reaches a multiple of `--snapshot-every`, with

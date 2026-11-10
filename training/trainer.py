@@ -131,9 +131,12 @@ class Trainer:
 
     def __init__(self, run_name: str = "default", config: dict | None = None,
                  resume: bool = False, quiet: bool = False, lock=None,
-                 purpose: str = "training"):
+                 purpose: str = "training", preallocate: bool = False):
         self.run = Run(run_name)
         self.quiet = quiet
+        # Reserve the weight file's disk space up front (where the OS can), so
+        # a full disk is an error at start-up, not a crash hours into the run.
+        self.preallocate = preallocate
         self.stop_requested = False
         self.net = None
         self._owns_lock = lock is None
@@ -175,7 +178,8 @@ class Trainer:
                 f"{meta.get('tuple_set')!r} but config says "
                 f"{self.tuple_set!r}; use a different --run name")
 
-        self.net = NTupleNetwork(self.tuple_set, path=self.run.weights_path)
+        self.net = NTupleNetwork(self.tuple_set, path=self.run.weights_path,
+                                 preallocate=self.preallocate)
         self.reward = RewardFunction(self.config.get("reward"))
         lc = self.config["learning"]
         self.learner = TDLearner(
@@ -235,22 +239,41 @@ class Trainer:
         deliver there, so it is handled the same way; SIGTERM does not exist
         on Windows and is registered only where it does.
 
+        SIGHUP is how a POSIX terminal says it has gone away -- an SSH session
+        that drops, a closed window -- and its default action ends the process
+        on the spot, with no checkpoint. It is handled like Ctrl-C, with two
+        differences. A hangup is usually delivered more than once (the kernel
+        sends it, then the shell forwards its own), so a repeat is not read
+        as "exit now". And it is left alone when it is being ignored on
+        purpose, which is what ``nohup`` and ``setsid``-style launchers do:
+        whoever started the run that way asked for it to outlive its terminal.
+
         Returns the handlers that were replaced, for
         :meth:`restore_signal_handlers`.
         """
+        sighup = getattr(signal, "SIGHUP", None)
+
         def handler(signum, frame):
             if self.stop_requested:
+                if signum == sighup:
+                    return
                 self._log("\nsecond interrupt -- exiting immediately")
                 sys.exit(130)
             self.stop_requested = True
-            self._log("\nstopping after the current game; "
-                      "checkpointing (Ctrl-C again to force quit)")
+            if signum == sighup:
+                self._log("\nterminal closed (SIGHUP); stopping after the "
+                          "current game and checkpointing")
+            else:
+                self._log("\nstopping after the current game; "
+                          "checkpointing (Ctrl-C again to force quit)")
         previous = {}
-        for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+        for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
             sig = getattr(signal, name, None)
             if sig is None:
                 continue
             try:
+                if sig == sighup and signal.getsignal(sig) != signal.SIG_DFL:
+                    continue        # ignored on purpose (nohup): keep it so
                 previous[sig] = signal.signal(sig, handler)
             except (ValueError, OSError):
                 pass        # not the main thread, or not supported here
@@ -268,8 +291,23 @@ class Trainer:
                 pass
 
     def _log(self, msg: str) -> None:
-        if not self.quiet:
+        if self.quiet:
+            return
+        try:
             print(msg, flush=True)
+        except (OSError, ValueError):
+            # Nowhere left to print: the terminal closed (EIO), the reader of
+            # a pipe exited (EPIPE) or stdout was closed. Progress lines are
+            # not worth a run that has trained for hours, so go quiet. Point
+            # stdout at the null device too, or the flush Python does at exit
+            # fails and changes the exit status.
+            self.quiet = True
+            try:
+                devnull = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull, sys.stdout.fileno())
+                os.close(devnull)
+            except (OSError, ValueError, AttributeError):
+                pass
 
     # -- checkpointing -----------------------------------------------------
     def save(self, note: str = "") -> None:
@@ -838,13 +876,14 @@ def _worker_main(wid, n_workers, net_spec, config, seed, start_index,
     traceback)`` if anything goes wrong.
     """
     # The parent handles interrupts and says when to stop. One aimed at the
-    # whole process group -- Ctrl-C in a terminal, or the control center's
-    # Ctrl-Break on Windows -- must not kill a worker half-way through a game.
-    # SIGTERM, on the other hand, is how the parent ends a worker that will
-    # not stop, so it keeps its default action: a forked worker would
-    # otherwise have inherited the trainer's own "stop after this game"
-    # handler, and shrugged it off.
+    # whole process group -- Ctrl-C in a terminal, a terminal hanging up
+    # (SIGHUP), or the control center's Ctrl-Break on Windows -- must not kill
+    # a worker half-way through a game. SIGTERM, on the other hand, is how the
+    # parent ends a worker that will not stop, so it keeps its default action:
+    # a forked worker would otherwise have inherited the trainer's own "stop
+    # after this game" handler, and shrugged it off.
     for name, action in (("SIGINT", signal.SIG_IGN),
+                         ("SIGHUP", signal.SIG_IGN),
                          ("SIGBREAK", signal.SIG_IGN),
                          ("SIGTERM", signal.SIG_DFL)):
         sig = getattr(signal, name, None)

@@ -39,11 +39,14 @@ Storage
 Weights live in a memory-mapped file of float32. That gives three things at
 once: processes share one copy of the table (``--workers 2`` needs no IPC for
 weights), checkpointing only has to flush dirty pages, and a crash leaves
-almost-current weights already on disk.
+almost-current weights already on disk. The file is sparse unless the caller
+asks for it to be preallocated, which long unattended runs do (see
+``preallocate`` below).
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import mmap
@@ -56,6 +59,14 @@ from typing import Sequence
 # set, so they are cached here. Every process that touches the network (two
 # training workers, the evaluator, the dashboard) pays ~0.2 s instead of ~4 s.
 # The cache is pure derived data: deleting it only costs one rebuild.
+# errno values that mean "the disk is full" and "this filesystem cannot reserve
+# space"; looked up by name because not every platform defines every one.
+_NO_SPACE = tuple(getattr(errno, n) for n in ("ENOSPC", "EDQUOT")
+                  if hasattr(errno, n))
+_CANNOT_RESERVE = tuple(getattr(errno, n)
+                        for n in ("EOPNOTSUPP", "ENOSYS", "EINVAL")
+                        if hasattr(errno, n))
+
 CACHE_DIR = Path(os.environ.get("AI2048_HOME")
                  or Path(__file__).resolve().parent.parent) / "data" / "tables"
 
@@ -134,10 +145,20 @@ class NTupleNetwork:
     readonly:
         Map the file read-only (for evaluation and the dashboard, so watching
         a game can never corrupt a training run).
+    preallocate:
+        Reserve the file's disk space now instead of leaving it sparse. A
+        sparse file only claims space as pages are first written, and a
+        memory-mapped write that cannot get a block because the disk is full
+        is not an error the program can catch: the kernel delivers SIGBUS and
+        the process dies, wherever it happens to be. Reserving up front turns
+        that into an ordinary "no space left" error before training starts.
+        Needs ``posix_fallocate`` (Linux); elsewhere, or on a filesystem that
+        cannot reserve space, the file stays sparse as before.
     """
 
     def __init__(self, tuple_set: str | Sequence = DEFAULT_TUPLE_SET,
-                 path: str | None = None, readonly: bool = False):
+                 path: str | None = None, readonly: bool = False,
+                 preallocate: bool = False):
         if isinstance(tuple_set, str):
             if tuple_set not in TUPLE_SETS:
                 raise ValueError(
@@ -151,8 +172,9 @@ class NTupleNetwork:
         self.tuples = tuples
         self.path = path
         self.readonly = readonly
+        self.preallocate = preallocate
 
-        self.sizes = [1 << (4 * len(t)) for t in tuples]
+        self.sizes =[1 << (4 * len(t)) for t in tuples]
         self.offsets = []
         off = 0
         for s in self.sizes:
@@ -187,6 +209,12 @@ class NTupleNetwork:
                     f.truncate(nbytes)
             mode = "rb" if self.readonly else "r+b"
             self._file = open(self.path, mode)
+            if self.preallocate and not self.readonly:
+                try:
+                    self._reserve_space(nbytes)
+                except BaseException:
+                    self._file.close()
+                    raise
             if self.readonly:
                 self._mm = mmap.mmap(self._file.fileno(), 0,
                                      access=mmap.ACCESS_READ)
@@ -194,6 +222,29 @@ class NTupleNetwork:
                 self._mm = mmap.mmap(self._file.fileno(), 0,
                                      access=mmap.ACCESS_WRITE)
         self.weights = memoryview(self._mm).cast("f")
+
+    def _reserve_space(self, nbytes: int) -> None:
+        """Back every page of the file with disk blocks (see ``preallocate``).
+
+        Safe on a file that already holds weights: it fills holes and leaves
+        existing data alone, and costs nothing when there are none.
+        """
+        fallocate = getattr(os, "posix_fallocate", None)
+        if fallocate is None:
+            return
+        try:
+            fallocate(self._file.fileno(), 0, nbytes)
+        except OSError as e:
+            if e.errno in _NO_SPACE:
+                raise OSError(
+                    e.errno,
+                    f"not enough free disk space for the "
+                    f"{nbytes / 1e6:.0f} MB weight file {self.path}; free "
+                    f"some space or point AI2048_HOME at a bigger disk"
+                ) from None
+            if e.errno in _CANNOT_RESERVE:
+                return       # this filesystem cannot reserve: stay sparse
+            raise
 
     def flush(self) -> None:
         """Push dirty weight pages to disk. Cheap: only touched pages move."""

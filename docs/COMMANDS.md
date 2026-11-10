@@ -90,8 +90,36 @@ python3 train.py --resume --workers 1
 python3 train.py --resume --workers 2
 ```
 
+### One worker per available CPU
+
+```bash
+python3 train.py --resume --workers auto
+```
+
+`auto` counts the CPUs this process may run on (so it respects `taskset`, a
+systemd `CPUAffinity=` and container CPU sets), not the machine's.
+
 Use at most one worker per CPU core. `train.py` prints a warning if you ask for
-more than the machine has.
+more than the process may use.
+
+### Restart-safe runs (servers, VMs, supervisors)
+
+```bash
+# start the run if it does not exist, continue it if it does
+python3 train.py --run main --workers auto --resume-if-exists
+
+# ...and stop by itself once the run has played 5,000,000 games in total
+python3 train.py --run main --workers auto --resume-if-exists \
+                 --target-games 5000000
+```
+
+`--target-games N` counts the whole run across however many sessions it takes
+(`--games N` counts one session, and the two cannot be combined). When the run
+has already played N games it prints so and exits 0, which makes the command
+safe to run again after a crash, a reboot or a preempted VM. A closed terminal
+(SIGHUP), `kill` (SIGTERM) and Ctrl-C all stop a run the same safe way:
+`deploy/long-run.sh` wraps this command, and
+[`LONG_RUNS.md`](LONG_RUNS.md) covers the rest.
 
 ### Named runs and network shapes
 

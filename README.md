@@ -127,6 +127,7 @@ The command line has not gone anywhere — see
 - [Starting a new training run](#starting-a-new-training-run)
 - [Resuming training](#resuming-training)
 - [Using multiple workers](#using-multiple-workers)
+- [Long runs on a Linux server or VM](#long-runs-on-a-linux-server-or-vm)
 - [Evaluating an agent](#evaluating-an-agent)
 - [Watching the AI play](#watching-the-ai-play)
 - [The command line](#the-command-line)
@@ -150,7 +151,7 @@ The command line has not gone anywhere — see
 | **Python** | **3.10 or newer** (3.10, 3.12 and 3.13 are tested) | Runs everything: the web server, the UI's API, training and evaluation |
 | **A web browser** | any current one | The control center is a web page at <http://127.0.0.1:8000> |
 | **Git** | any | To clone and update the repository. Optional: GitHub's **Code ▸ Download ZIP** works too |
-| Disk space | ~300 MB free | The default network's weight file (268 MB; created sparse on Linux/macOS, so it only grows as used) |
+| Disk space | ~300 MB free | The default network's weight file (268 MB; created sparse on Linux/macOS, so it only grows as used, and reserved up front by `train.py` on Linux) |
 
 That is the complete list. In particular you do **not** need:
 
@@ -530,7 +531,7 @@ on macOS) collapses the sidebar, and `?` lists them all.
 | **Supervised jobs** | Training and evaluation run as subprocesses with real state, progress and a graceful stop. |
 | **Play it yourself** | Human play and You-vs-AI, on the same Python engine the AI uses. |
 | **Localhost-only** | Binds to 127.0.0.1, refuses cross-origin requests, never takes a filesystem path from the browser. |
-| **Tested** | 359 tests, run on Linux, Windows and macOS by CI. |
+| **Tested** | 393 tests, run on Linux, Windows and macOS by CI. |
 
 ---
 
@@ -732,15 +733,17 @@ evaluation/   the fixed, seeded evaluation procedure and its statistics
 experiments/  runs a config, evaluates it, stores config+result together
 dashboard/    stdlib HTTP server, JSON API, static front end, live game thread
 config/       default.json plus 18 experiment configs
-tests/        359 tests: unit, integration, API, end-to-end, plus a benchmark
-docs/         architecture and command reference
+tests/        393 tests: unit, integration, API, end-to-end, plus a benchmark
+deploy/       launcher and systemd unit for long runs on Linux
+docs/         architecture, command reference, long-run guide
 ```
 
 Four command-line entry points sit on top: `train.py`, `evaluate.py`,
 `experiment.py`, `server.py`.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture and
-[`docs/COMMANDS.md`](docs/COMMANDS.md) for a command reference.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture,
+[`docs/COMMANDS.md`](docs/COMMANDS.md) for a command reference and
+[`docs/LONG_RUNS.md`](docs/LONG_RUNS.md) for long runs on a Linux server.
 
 ---
 
@@ -817,6 +820,7 @@ Measured on the development laptop (2 cores), fresh 4×6 run, 600 games:
 | 2 | 53.7 | 21,593 | **1.8×** |
 
 Use at most one worker per CPU core; `train.py` warns if you ask for more.
+`--workers auto` picks one per CPU this process may use.
 
 `--eval-every` and `--snapshot-every` work with any number of workers: at each
 of those points every worker finishes its share of the games, the evaluation or
@@ -830,6 +834,32 @@ One caveat worth knowing: with a single worker a run is bit-for-bit
 reproducible from its seed. With several, the games are still seeded but the
 weight updates interleave between processes, so a rerun is statistically
 identical rather than literally identical.
+
+---
+
+## Long runs on a Linux server or VM
+
+For a run that lasts hours or days on a cloud VM or any Linux box:
+
+```bash
+./deploy/long-run.sh                          # every CPU, until stopped
+TARGET_GAMES=5000000 ./deploy/long-run.sh     # or stop by itself at a total
+```
+
+That one command starts the run if it does not exist and continues it if it
+does, so it is safe to run again after a crash, a reboot or a preempted Spot VM.
+`train.py` itself offers the pieces: `--workers auto`, `--resume-if-exists` and
+`--target-games N` (a total for the whole run, where `--games` counts one
+session). A closed terminal or dropped SSH session (SIGHUP) saves and stops the
+run just as Ctrl-C does — unless it was started under `nohup`, tmux or systemd,
+which keep it alive — and the weight file's disk space is reserved when
+training starts, so a full disk is an error message at the start and not a
+crash hours in.
+
+[`docs/LONG_RUNS.md`](docs/LONG_RUNS.md) has the rest: choosing a machine, a
+systemd unit (`deploy/2048-train.service`) that resumes after a reboot, what
+each kind of failure does to a run, settings worth choosing for a long run, and
+getting the result off the VM.
 
 ---
 
@@ -1001,7 +1031,7 @@ python3 tests/benchmark_engine.py                # throughput benchmark
 
 On Windows use `py -m unittest discover -s tests`.
 
-**359 tests.** What they actually check:
+**393 tests.** What they actually check:
 
 - **`test_engine.py`** — merge rules including the awkward cases (`2 2 2 2` →
   `4 4 . .`, `4 4 8 8` → `8 16 . .`), that a freshly merged tile cannot merge
@@ -1069,6 +1099,13 @@ On Windows use `py -m unittest discover -s tests`.
 - **`test_frontend.py`** — the Checkpoints page's Watch button plays the
   snapshot it was pressed on, and the live-update fallback polls only while
   the event stream is down (run under Node.js where it is installed).
+- **`test_longrun.py`** — running unattended on a Linux server: **a dropped
+  SSH session or closed terminal (SIGHUP) saves and stops training, repeated
+  hangups are not a force-quit, and a run under `nohup` outlives them**; a
+  closed pipe does not kill training; the weight file's disk space is reserved
+  up front and a full disk is a clean error; `--workers auto` counts the CPUs
+  the process may use; `--resume-if-exists` and `--target-games` make one
+  restart-safe command; and the launcher script and systemd unit in `deploy/`.
 - **`test_startup.py`** — the ways people really start and stop it: starting a
   second copy points at the first instead of failing, `--stop` and
   `--restart`, a port held by another program is left alone, **SIGTERM and
@@ -1236,9 +1273,12 @@ figure above is close to a worst case rather than a typical one.
 | `4x5` | 4.2 M | 17 MB |
 | `8x4` | 0.5 M | 2 MB |
 
-Plus roughly 60 MB of engine and index lookup tables per process. On Linux and
-macOS the weight file is created sparse, so it only occupies what has actually
-been written; on Windows it occupies its full size immediately.
+Plus roughly 60 MB of engine and index lookup tables per process; a forked
+worker shares them, and adds only about 5 MB of its own. On Linux and macOS the
+weight file is created sparse, so it only occupies what has actually been
+written; `train.py` reserves its full size up front on Linux (so a full disk is
+an error at start-up, not a SIGBUS hours later), and on Windows it occupies its
+full size immediately.
 
 ---
 
@@ -1272,8 +1312,9 @@ What was specifically made portable rather than assumed:
   *terminate* the training process, so Windows gets a read-only handle probe
   instead.
 - **Interrupts.** Ctrl-C saves and exits cleanly everywhere. Windows also
-  delivers Ctrl-Break, which is handled identically; `SIGTERM` is registered
-  only where it exists.
+  delivers Ctrl-Break, which is handled identically; `SIGTERM` and `SIGHUP`
+  (a terminal going away) are registered only where they exist, and a
+  `SIGHUP` that is being ignored on purpose, as under `nohup`, is left ignored.
 - **Text files.** Every JSON and JSONL file is read and written as UTF-8
   explicitly, rather than inheriting a locale-dependent default.
 - **Atomic writes.** `os.replace` is atomic on all three, but Windows refuses
@@ -1284,7 +1325,9 @@ Known differences that are documented rather than papered over:
 
 - `spawn` costs each worker a few seconds of lookup-table building at start-up.
   Single-worker training is identical everywhere.
-- Weight files are sparse on Linux/macOS and fully allocated on Windows.
+- Weight files are sparse on Linux/macOS and fully allocated on Windows;
+  `train.py` also reserves the space up front where `posix_fallocate` exists
+  (Linux).
 - The dashboard lowers its own priority with `os.nice` on POSIX; there is no
   equivalent call on Windows, so it simply does not.
 
@@ -1346,10 +1389,15 @@ Known differences that are documented rather than papered over:
 │   ├── default.json           the default configuration
 │   └── experiments/           18 experiment configs
 │
-├── tests/                     359 tests + the engine benchmark
+├── deploy/
+│   ├── long-run.sh            start-or-resume a long run on a Linux machine
+│   └── 2048-train.service     systemd unit: resumes after a reboot or preemption
+│
+├── tests/                     393 tests + the engine benchmark
 ├── docs/
 │   ├── ARCHITECTURE.md        how the pieces fit together, and why
 │   ├── COMMANDS.md            command reference, with Windows equivalents
+│   ├── LONG_RUNS.md           long unattended runs on a Linux server or VM
 │   └── images/                documentation screenshots
 │
 ├── checkpoints/               created on first run — not in Git
